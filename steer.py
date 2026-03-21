@@ -208,6 +208,15 @@ def evaluate_steering(pipe, concept_name, method="rfm", epsilon=DEFAULT_EPSILON,
         pipe, n_images, vectors, epsilon=epsilon, class_ids=class_ids
     )
 
+    # Save sample images for inspection
+    import os
+    save_dir = os.path.join("results", f"{concept_name}_{method}_eps{epsilon}")
+    os.makedirs(save_dir, exist_ok=True)
+    for i, (b_img, s_img) in enumerate(zip(baseline_images[:10], steered_images[:10])):
+        b_img.save(os.path.join(save_dir, f"baseline_{i:03d}.png"))
+        s_img.save(os.path.join(save_dir, f"steered_{i:03d}.png"))
+    print(f"  Saved sample images to {save_dir}/")
+
     # Label both sets
     baseline_labels = get_concept_labels(concept_cfg, baseline_images, class_ids)
     steered_labels = get_concept_labels(concept_cfg, steered_images, class_ids)
