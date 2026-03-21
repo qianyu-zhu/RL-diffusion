@@ -64,6 +64,11 @@ class ActivationCollector:
                 hidden = output[0]
             else:
                 hidden = output
+            # With CFG, batch is doubled (conditional + unconditional).
+            # Take only the first half (conditional predictions).
+            batch_size = hidden.shape[0]
+            if batch_size > 1 and batch_size % 2 == 0:
+                hidden = hidden[:batch_size // 2]
             # Spatially pool: (batch, num_patches, hidden_dim) -> (batch, hidden_dim)
             pooled = hidden.mean(dim=1).detach().cpu()
             self.activations[layer_idx] = pooled
