@@ -143,6 +143,57 @@ Once concept vector extraction completes:
 
 ---
 
+---
+
+## 2026-03-21: Session 2 — Theory Refinement and Critic Review
+
+### Multi-Agent Theory Review
+
+Deployed two agents: a ruthless NeurIPS critic and a novelty checker.
+
+### Novelty Check: CLEAR
+
+No existing paper connects activation steering to the value function / optimal control in diffusion models:
+- All optimal control papers (Berner 2022, Uehara 2024, VARD 2025) work in **input space**
+- All activation steering papers (Kwon 2023, Li 2024, Wang 2026, AcT 2025) are purely empirical with **no control-theoretic framework**
+- One important new competitor: **Wang et al. (Feb 2026)** "General and Efficient Steering of Unconditional Diffusion" — uses RFM/AGOP vectors in U-Net activation space, but provides NO theoretical justification. Our framework would explain their results.
+
+### Critic's 5 Serious Weaknesses
+
+**1. Math doesn't quite work.** V(x_t, t) ≠ V_a(a_ℓ, t) because spatial pooling is lossy. The chain rule ∇_x V = J^T ∇_a V requires the Jacobian.
+→ **Fix**: weaken to "motivated by" rather than "identical to"; or derive properly with bounds.
+
+**2. "First-order approximation" may be vacuous.** Every smooth function is locally linear. Also: logistic regression weight ≠ ∇_a E[r|a] (it's ∇_a log-odds, a different function).
+→ **Fix**: specify radius of validity; use linear regression instead of logistic for the true gradient.
+
+**3. FK connection is rhetorical.** FK has consistency guarantees + per-step adaptation; LASD is a fixed perturbation with no guarantees.
+→ **Fix**: frame as "same motivation, different approximation level" not "same method."
+
+**4. Concepts are trivially simple.** Brightness = mean pixel, colorfulness = channel std. These are first-order statistics linear by construction.
+→ **Fix**: test on semantic concepts (animal, natural, style) with 1000+ samples.
+
+**5. Sample size is 50-100x too small.** 20 test samples gives CI of ±10%. NFA AGOP with 50 samples in 1152-d space is rank-deficient.
+→ **Fix**: need proper hardware for scale; acknowledge limitation for M1 results.
+
+### Revised Theoretical Position
+
+The honest, defensible claim:
+
+> "Linear activation steering in diffusion models is **motivated by** the optimal control formulation: the probe weight vector is an empirical approximation to the direction of maximal expected reward improvement in activation space. This provides a **unified lens** for understanding why activation editing works (value gradient under linearity), why the NFA fails in DiTs (denoising AGOP ≠ concept AGOP), and which directions are most effective for steering (causal > predictive, per Marks & Tegmark)."
+
+This is NOT: "we proved LASD = optimal control." It IS: "we provide the first theoretical framework connecting activation steering to stochastic control, with predictions that can be empirically tested."
+
+### Extraction Complete
+
+168 concept vectors extracted: brightness × 28 layers × {RFM, mean-diff, PCA} + colorfulness × 28 layers × {RFM, mean-diff, PCA}.
+
+### Stage 2 Initiated
+
+First experiment: mean-diff steering for brightness at layer 0, ε=0.1.
+Key test: does steering with the predictive direction actually cause a concept shift?
+
+---
+
 ### Commits
 
 | Hash | Description |
@@ -151,6 +202,7 @@ Once concept vector extraction completes:
 | `eb78574` | LASD experiment infrastructure (config, eval, extract, steer, setup) |
 | `dff5d2a` | Fix CFG batch doubling in activation hooks |
 | `7d881a1` | Add logreg weight extraction + norm-clipping guardrail |
+| `e9952ce` | Add research log, literature review, and proposal |
 
 ### Results Summary
 
