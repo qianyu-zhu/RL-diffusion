@@ -561,6 +561,12 @@ def main():
                 torch.save({"vector": vec_pca, "method": "pca"},
                            Path(VECTORS_DIR) / f"{concept_name}_layer{layer_idx}_pca.pt")
 
+                # Logistic regression weight (theory: ≈ value gradient)
+                _, vec_lr = linear_probe(acts_valid, labels_valid.long())
+                if vec_lr is not None:
+                    torch.save({"vector": vec_lr, "method": "logreg", "layer": layer_idx},
+                               Path(VECTORS_DIR) / f"{concept_name}_layer{layer_idx}_logreg.pt")
+
         print_summary(
             peak_vram_mb=get_peak_memory_mb(),
             wall_seconds=timer.elapsed(),

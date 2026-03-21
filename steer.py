@@ -72,7 +72,14 @@ class SteeringHook:
             v = concept_vec.to(hidden.device, hidden.dtype)
             # hidden: (batch, num_patches, hidden_dim)
             # v: (hidden_dim,) -> broadcast to (1, 1, hidden_dim)
+            orig_norm = hidden.norm(dim=-1, keepdim=True)
             hidden = hidden + eps * v.unsqueeze(0).unsqueeze(0)
+            # Norm-clipping guardrail (Activation Transport insight):
+            # prevent steering from pushing activations OOD
+            new_norm = hidden.norm(dim=-1, keepdim=True)
+            max_norm = orig_norm * 1.5  # allow 50% norm increase max
+            scale = torch.clamp(max_norm / new_norm.clamp(min=1e-8), max=1.0)
+            hidden = hidden * scale
 
             if rest is not None:
                 return (hidden,) + rest
