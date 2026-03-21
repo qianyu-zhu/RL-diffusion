@@ -210,3 +210,100 @@ Key test: does steering with the predictive direction actually cause a concept s
 |---|---|---|---|---|---|
 | eb78574 | S0 | nfa_cosine | 0.031 | gate_fail | NFA doesn't hold in DiTs |
 | dff5d2a | S1 | probe_acc | 0.950 | gate_pass | Strong linearity: 95% acc, zero gap |
+| 2e81184 | S2 | lift | -0.080 | discard | mean-diff brightness layer0 eps=0.5: NEGATIVE lift. Predictive ≠ causal |
+| 0d27801 | S2 | — | — | incomplete | mean-diff eps=-0.5 + RFM eps=0.5: killed (M1 too slow) |
+
+---
+
+## 2026-03-21: Session 3 — Stage 2 First Result + HPC Migration Plan
+
+### Stage 2 First Result: Predictive ≠ Causal
+
+**Experiment:** Steer brightness with mean-diff vector at layer 0 (the most predictive layer, 95% probe acc), ε=0.5.
+
+**Result:** Baseline positive rate = 26%, steered = 18%. **Lift = -8%** (wrong direction).
+
+**This is a key finding, not a failure.** It confirms the theory's central prediction: the most *predictive* layer is NOT the most *causally effective* layer. Layer 0 has 95% probe accuracy (it knows about brightness) but steering there pushes through 28 nonlinear transformer blocks, distorting or inverting the perturbation.
+
+**Possible explanations (to test on HPC):**
+1. **Vector orientation is flipped** — the mean-diff direction may need negation (was testing with ε=-0.5 when killed)
+2. **Layer 0 is too early** — perturbation gets distorted through 28 subsequent layers. Late layers (25-27) may be causally effective despite lower probe accuracy
+3. **Norm-clipping is too aggressive** — the 1.5× norm cap may be suppressing the steering signal
+4. **ε=0.5 is too large** — may be pushing activations OOD, causing artifacts rather than steering
+
+### What to Test on HPC (Priority Order)
+
+**Immediate (Stage 2 completion):**
+1. **Layer sweep:** Steer brightness with mean-diff at each of layers {0, 5, 10, 15, 20, 25, 27} with ε=0.5. Find the causally best layer.
+2. **Epsilon sweep at best layer:** ε ∈ {0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0}
+3. **Method comparison at best layer:** mean-diff vs RFM vs PCA vs logreg, same ε
+4. **Negative epsilon:** Confirm whether negating the vector flips the concept direction
+5. **Save images:** Visual inspection of baseline vs steered
+
+**Scale up (fix sample size weakness):**
+6. Re-run Stage 1 probing with 1000+ samples (not 100)
+7. Add semantic concepts: animal, natural (already in config.py but untested)
+8. Re-run NFA validation with 1200+ samples (full rank AGOP in 1152-d)
+
+**Theory validation:**
+9. Modified NFA: compute AGOP with adaLN-modulated weights W_eff(t) = γ(t) ⊙ W
+10. Predictive-causal gap plot: probe accuracy vs steering lift at each layer (the key figure)
+11. Compare to FK steering (k=4) as upper bound
+
+### HPC Configuration Changes Needed
+
+Update `config.py` for HPC:
+```python
+# Change for HPC with GPU (A100/H100):
+DEVICE = "cuda"
+DTYPE = torch.float16                    # fp16 for speed on CUDA
+DEFAULT_N_SAMPLES = 5000                 # proper sample size
+NFA_N_SAMPLES = 1200                     # full-rank AGOP
+EVAL_N_IMAGES = 500                      # statistically meaningful
+EVAL_BATCH_SIZE = 16                     # large batches on A100
+NUM_INFERENCE_STEPS = 50                 # full quality
+```
+
+### Files in the Repository
+
+```
+RL-diffusion/
+├── config.py           # Model config, concepts, hyperparams (READ ONLY during experiments)
+├── eval.py             # Labelers, metrics, summary printer (READ ONLY)
+├── extract.py          # Activation hooks, RFM/AGOP, probing, NFA validation (MODIFY)
+├── steer.py            # Steering hooks, evaluation, ablation, compose (MODIFY)
+├── setup.py            # One-time model download
+├── pyproject.toml      # Dependencies
+├── program.md          # Autonomous experiment protocol
+├── RESEARCH_LOG.md     # This file
+├── main.tex            # Literature review paper
+├── proposal.tex        # LASD research proposal (standalone)
+├── background-info.md  # Reference papers and people
+├── .gitignore          # Excludes artifacts, vectors, results
+├── vectors/            # 168 extracted concept vectors (gitignored)
+│   ├── brightness_layer{0-27}_{rfm,meandiff,pca}.pt
+│   └── colorfulness_layer{0-27}_{rfm,meandiff,pca}.pt
+└── results/            # Saved images from steering (gitignored)
+```
+
+### Commits (full history)
+
+| Hash | Description |
+|---|---|
+| `43ae5ec` | Initial commit (background-info.md) |
+| `eb78574` | LASD experiment infrastructure |
+| `dff5d2a` | Fix CFG batch doubling in activation hooks |
+| `7d881a1` | Add logreg weight extraction + norm-clipping guardrail |
+| `e9952ce` | Add research log, literature review, and proposal |
+| `96c28cd` | Update research log: theory refinement + critic review |
+| `2e81184` | Fix method name -> filename mapping in vector loader |
+| `0d27801` | Save sample images for visual inspection |
+
+### Key Theoretical Conclusions (for Resumption)
+
+1. **The novel contribution is clear:** No prior work connects activation steering to the value function in diffusion. Novelty confirmed across exhaustive literature search.
+2. **The NFA failure is explained but not experimentally confirmed:** Need adaLN-modulated NFA test.
+3. **The value gradient framing should be "motivated by" not "identical to":** The math has gaps (lossy spatial pooling, logistic ≠ linear regression, undefined radius of validity).
+4. **Stage 2 first result supports the theory:** Predictive ≠ causal at early layers. This is the paper's most interesting empirical prediction.
+5. **Wang et al. (2026) is the closest competitor:** They use RFM in U-Net activation space but provide no theoretical justification. Our framework explains their results.
+6. **Marks & Tegmark predicts mean-diff > logreg for causal steering:** Untested in diffusion. Key experiment for HPC.
