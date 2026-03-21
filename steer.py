@@ -160,12 +160,15 @@ def generate_baseline(pipe, n_images, class_ids=None):
 # Load concept vectors
 # ---------------------------------------------------------------------------
 
+METHOD_FILE_MAP = {"rfm": "rfm", "mean_diff": "meandiff", "pca": "pca", "logreg": "logreg"}
+
 def load_concept_vectors(concept_name, method="rfm", layers=None):
     """Load pre-extracted concept vectors from disk."""
     vectors = {}
     vec_dir = Path(VECTORS_DIR)
+    file_suffix = METHOD_FILE_MAP.get(method, method)
 
-    for f in vec_dir.glob(f"{concept_name}_layer*_{method}.pt"):
+    for f in vec_dir.glob(f"{concept_name}_layer*_{file_suffix}.pt"):
         data = torch.load(f, map_location="cpu", weights_only=True)
         layer_idx = data.get("layer", int(f.stem.split("layer")[1].split("_")[0]))
         if layers is None or layer_idx in layers:
