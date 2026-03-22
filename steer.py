@@ -60,10 +60,28 @@ class SteeringHook:
         self.hooks = []
         self._register_hooks()
 
-    def step_callback(self, pipe, step, timestep, callback_kwargs):
-        """Pipeline callback to track current denoising step."""
-        self.current_step = step + 1  # called after step completes
-        return callback_kwargs
+    def _setup_step_counter(self):
+        """Track denoising steps by counting forward passes through block 0.
+        DiTPipeline doesn't support callbacks, so we count transformer calls.
+        With CFG, each denoising step calls the transformer once with doubled batch.
+        """
+        self._fwd_count = 0
+        block0 = self.transformer.transformer_blocks[0]
+        def counter_hook(module, input, output):
+            self._fwd_count += 1
+            # Each forward pass = one denoising step (CFG doubles batch, not calls)
+            self.current_step = self._fwd_count - 1
+            return output
+        self._counter_hook = block0.register_forward_pre_hook(
+            lambda m, i: None  # dummy, actual counting in forward hook
+        )
+        # Use a forward hook instead
+        self._counter_hook.remove()
+        self._counter_hook = block0.register_forward_hook(counter_hook)
+
+    def _remove_step_counter(self):
+        if hasattr(self, '_counter_hook'):
+            self._counter_hook.remove()
 
     def _get_bin_index(self):
         """Map current step to a bin index for Strategy B."""
@@ -76,6 +94,8 @@ class SteeringHook:
         blocks = self.transformer.transformer_blocks
 
         if self.strategy == "B" and self.binned_vectors:
+            # Set up step counter for time-binned steering
+            self._setup_step_counter()
             # For Strategy B, register hooks for all layers that appear in any bin
             all_layers = set()
             for bin_vecs in self.binned_vectors.values():
@@ -86,8 +106,17 @@ class SteeringHook:
                         self._make_hook_binned(layer_idx)
                     )
                     self.hooks.append(hook)
+        elif self.epsilon_schedule is not None:
+            # Need step tracking for epsilon schedule too
+            self._setup_step_counter()
+            for layer_idx, vec in self.concept_vectors.items():
+                if layer_idx < len(blocks):
+                    hook = blocks[layer_idx].register_forward_hook(
+                        self._make_hook(layer_idx, vec)
+                    )
+                    self.hooks.append(hook)
         else:
-            # Strategy A or C
+            # Strategy A — no step tracking needed
             for layer_idx, vec in self.concept_vectors.items():
                 if layer_idx < len(blocks):
                     hook = blocks[layer_idx].register_forward_hook(
@@ -161,6 +190,7 @@ class SteeringHook:
         for h in self.hooks:
             h.remove()
         self.hooks = []
+        self._remove_step_counter()
 
 
 # ---------------------------------------------------------------------------
@@ -179,10 +209,7 @@ def generate_steered(pipe, n_images, concept_vectors, epsilon=DEFAULT_EPSILON,
         norm_clip=norm_clip,
     )
 
-    # Use callback for Strategy B to track denoising step
-    use_callback = strategy == "B" or epsilon_schedule is not None
-    callback_fn = steering.step_callback if use_callback else None
-
+    # Step tracking is handled internally via hooks (no pipeline callback needed)
     images = []
     used_class_ids = []
 
@@ -194,7 +221,9 @@ def generate_steered(pipe, n_images, concept_vectors, epsilon=DEFAULT_EPSILON,
         else:
             cids = torch.randint(0, NUM_CLASSES, (batch_size,)).tolist()
 
-        steering.current_step = 0  # reset step counter per batch
+        # Reset step counter for each batch
+        steering.current_step = 0
+        steering._fwd_count = 0
 
         with torch.no_grad():
             output = pipe(
@@ -202,7 +231,6 @@ def generate_steered(pipe, n_images, concept_vectors, epsilon=DEFAULT_EPSILON,
                 num_inference_steps=NUM_INFERENCE_STEPS,
                 guidance_scale=GUIDANCE_SCALE,
                 output_type="pil",
-                callback_on_step_end=callback_fn,
             )
 
         images.extend(output.images)

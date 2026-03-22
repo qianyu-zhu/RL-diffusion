@@ -84,12 +84,15 @@ class ActivationCollector:
 
 
 class MultiStepActivationCollector:
-    """Collect activations at multiple denoising steps via a scheduler callback.
+    """Collect activations at multiple denoising steps.
+
+    Since DiTPipeline doesn't support callbacks, we track steps by counting
+    forward passes through a hook on transformer block 0. Each denoising step
+    = one forward pass (CFG doubles the batch, not the number of calls).
 
     Usage:
         collector = MultiStepActivationCollector(transformer, capture_steps=[0, 5, 10, 15, 20, 24])
-        # Pass collector.callback to the pipeline call
-        output = pipe(..., callback_on_step_end=collector.callback)
+        output = pipe(...)  # no callback needed
         # collector.step_activations[step_idx][layer_idx] = (n_batch, hidden_dim)
     """
 
@@ -97,31 +100,67 @@ class MultiStepActivationCollector:
         self.transformer = transformer
         self.capture_steps = set(capture_steps) if capture_steps else None
         self.current_step = 0
+        self._fwd_count = 0
         self.step_activations = {}  # {step: {layer_idx: (batch, hidden_dim)}}
-        self._inner = ActivationCollector(transformer, layers=layers)
+        self._target_layers = layers
+        self._hooks = []
+        self._setup_hooks()
 
-    def callback(self, pipe, step, timestep, callback_kwargs):
-        """Pipeline callback — called after each denoising step."""
+    def _setup_hooks(self):
+        blocks = self.transformer.transformer_blocks
+        target_layers = self._target_layers if self._target_layers is not None else list(range(len(blocks)))
+
+        # Per-layer activation capture hooks
+        self._layer_activations = {}  # temporary storage for current step
+        for idx in target_layers:
+            hook = blocks[idx].register_forward_hook(self._make_capture_hook(idx))
+            self._hooks.append(hook)
+
+        # Step counter on the LAST target layer — fires after all layers have run
+        last_layer = max(target_layers)
+        hook = blocks[last_layer].register_forward_hook(self._step_hook)
+        self._hooks.append(hook)
+
+    def _make_capture_hook(self, layer_idx):
+        def hook_fn(module, input, output):
+            if isinstance(output, tuple):
+                hidden = output[0]
+            else:
+                hidden = output
+            # Handle CFG batch doubling
+            batch_size = hidden.shape[0]
+            if batch_size > 1 and batch_size % 2 == 0:
+                hidden = hidden[:batch_size // 2]
+            self._layer_activations[layer_idx] = hidden.mean(dim=1).detach().cpu()
+        return hook_fn
+
+    def _step_hook(self, module, input, output):
+        """Called after the last target layer — snapshot activations for this step."""
+        step = self._fwd_count
         if self.capture_steps is None or step in self.capture_steps:
-            # The inner collector already captured activations from the last forward pass
             self.step_activations[step] = {}
-            for layer_idx, act in self._inner.activations.items():
+            for layer_idx, act in self._layer_activations.items():
                 self.step_activations[step][layer_idx] = act.clone()
-        self._inner.clear()
-        self.current_step = step + 1
-        return callback_kwargs
+        self._layer_activations.clear()
+        self._fwd_count += 1
+        self.current_step = self._fwd_count
 
     def clear(self):
         self.step_activations = {}
         self.current_step = 0
-        self._inner.clear()
+        self._fwd_count = 0
+        self._layer_activations.clear()
 
     def remove_hooks(self):
-        self._inner.remove_hooks()
+        for h in self._hooks:
+            h.remove()
+        self._hooks = []
 
 
 def generate_and_collect_multistep(pipe, n_samples, collector, class_ids=None):
     """Generate images and collect activations at multiple denoising steps.
+
+    The collector tracks steps internally via hooks (no pipeline callback needed).
 
     Args:
         collector: MultiStepActivationCollector
@@ -151,7 +190,6 @@ def generate_and_collect_multistep(pipe, n_samples, collector, class_ids=None):
                 num_inference_steps=NUM_INFERENCE_STEPS,
                 guidance_scale=GUIDANCE_SCALE,
                 output_type="pil",
-                callback_on_step_end=collector.callback,
             )
 
         images.extend(output.images)
