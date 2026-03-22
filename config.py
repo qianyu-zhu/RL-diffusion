@@ -16,13 +16,13 @@ NUM_LAYERS = 28                          # DiT-XL depth
 NUM_HEADS = 16
 
 # Device
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
-DTYPE = torch.float32                    # MPS doesn't support fp16 well
+DEVICE = "cuda"
+DTYPE = torch.float16
 
 # ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
-NUM_INFERENCE_STEPS = 25                 # reduced for M1 speed (~25s/image)
+NUM_INFERENCE_STEPS = 50
 GUIDANCE_SCALE = 4.0                     # CFG scale for class-conditional generation
 SCHEDULER = "ddpm"
 
@@ -59,14 +59,14 @@ CONCEPTS = {
 RFM_ITERATIONS = 3
 RFM_KERNEL = "laplace"
 RFM_RIDGE_LAMBDA = 0.01
-DEFAULT_N_SAMPLES = 100                  # conservative for M1 16GB + slow MPS generation
-NFA_N_SAMPLES = 50
+DEFAULT_N_SAMPLES = 5000
+NFA_N_SAMPLES = 1200
 
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
-EVAL_N_IMAGES = 50                       # images per evaluation run (M1 is slow)
-EVAL_BATCH_SIZE = 1                      # single image batches for M1 16GB
+EVAL_N_IMAGES = 500
+EVAL_BATCH_SIZE = 16
 FID_N_REAL = 1000                        # real images for FID reference
 
 # ---------------------------------------------------------------------------
