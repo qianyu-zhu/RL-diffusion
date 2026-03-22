@@ -27,34 +27,91 @@ from extract import load_dit_pipeline, get_dit_transformer
 # ---------------------------------------------------------------------------
 
 class SteeringHook:
-    """Inject concept vectors into DiT residual stream during denoising."""
+    """Inject concept vectors into DiT residual stream during denoising.
+
+    Supports three strategies:
+        A: Shared vector — same concept vector at every denoising step
+        B: Time-binned — different vectors for different timestep bins
+        C: Interpolated — linearly interpolate between early/late vectors
+    """
 
     def __init__(self, transformer, concept_vectors, epsilon=DEFAULT_EPSILON,
-                 strategy="A", epsilon_schedule=None):
+                 strategy="A", epsilon_schedule=None, binned_vectors=None,
+                 norm_clip=1.5):
         """
         Args:
             transformer: DiT transformer module
-            concept_vectors: dict of {layer_idx: (d,) tensor}
+            concept_vectors: dict of {layer_idx: (d,) tensor} — used for strategy A/C
             epsilon: steering strength (float or dict of {layer: float})
             strategy: "A" (shared vector), "B" (time-binned), "C" (interpolated)
-            epsilon_schedule: optional callable(timestep) -> float
+            epsilon_schedule: optional callable(step_index, total_steps) -> float
+            binned_vectors: for strategy B, dict of {bin_idx: {layer_idx: (d,) tensor}}
+            norm_clip: max ratio for norm clipping (1.5 = allow 50% increase)
         """
         self.transformer = transformer
         self.concept_vectors = concept_vectors
         self.epsilon = epsilon
         self.strategy = strategy
         self.epsilon_schedule = epsilon_schedule
+        self.binned_vectors = binned_vectors
+        self.norm_clip = norm_clip
+        self.current_step = 0
+        self.total_steps = NUM_INFERENCE_STEPS
         self.hooks = []
         self._register_hooks()
 
+    def step_callback(self, pipe, step, timestep, callback_kwargs):
+        """Pipeline callback to track current denoising step."""
+        self.current_step = step + 1  # called after step completes
+        return callback_kwargs
+
+    def _get_bin_index(self):
+        """Map current step to a bin index for Strategy B."""
+        if not self.binned_vectors:
+            return 0
+        n_bins = len(self.binned_vectors)
+        return min(int(self.current_step * n_bins / self.total_steps), n_bins - 1)
+
     def _register_hooks(self):
         blocks = self.transformer.transformer_blocks
-        for layer_idx, vec in self.concept_vectors.items():
-            if layer_idx < len(blocks):
-                hook = blocks[layer_idx].register_forward_hook(
-                    self._make_hook(layer_idx, vec)
-                )
-                self.hooks.append(hook)
+
+        if self.strategy == "B" and self.binned_vectors:
+            # For Strategy B, register hooks for all layers that appear in any bin
+            all_layers = set()
+            for bin_vecs in self.binned_vectors.values():
+                all_layers.update(bin_vecs.keys())
+            for layer_idx in all_layers:
+                if layer_idx < len(blocks):
+                    hook = blocks[layer_idx].register_forward_hook(
+                        self._make_hook_binned(layer_idx)
+                    )
+                    self.hooks.append(hook)
+        else:
+            # Strategy A or C
+            for layer_idx, vec in self.concept_vectors.items():
+                if layer_idx < len(blocks):
+                    hook = blocks[layer_idx].register_forward_hook(
+                        self._make_hook(layer_idx, vec)
+                    )
+                    self.hooks.append(hook)
+
+    def _apply_steering(self, hidden, v, eps):
+        """Apply steering vector with norm clipping."""
+        orig_norm = hidden.norm(dim=-1, keepdim=True)
+        hidden = hidden + eps * v.unsqueeze(0).unsqueeze(0)
+        if self.norm_clip > 0:
+            new_norm = hidden.norm(dim=-1, keepdim=True)
+            max_norm = orig_norm * self.norm_clip
+            scale = torch.clamp(max_norm / new_norm.clamp(min=1e-8), max=1.0)
+            hidden = hidden * scale
+        return hidden
+
+    def _get_eps(self, layer_idx):
+        """Get epsilon, accounting for schedule and per-layer values."""
+        eps = self.epsilon if isinstance(self.epsilon, (int, float)) else self.epsilon.get(layer_idx, 0.0)
+        if self.epsilon_schedule is not None:
+            eps = eps * self.epsilon_schedule(self.current_step, self.total_steps)
+        return eps
 
     def _make_hook(self, layer_idx, concept_vec):
         def hook_fn(module, input, output):
@@ -65,21 +122,35 @@ class SteeringHook:
                 hidden = output
                 rest = None
 
-            # Get epsilon for this layer
-            eps = self.epsilon if isinstance(self.epsilon, (int, float)) else self.epsilon.get(layer_idx, 0.0)
-
-            # Apply steering: add eps * v to all spatial positions
+            eps = self._get_eps(layer_idx)
             v = concept_vec.to(hidden.device, hidden.dtype)
-            # hidden: (batch, num_patches, hidden_dim)
-            # v: (hidden_dim,) -> broadcast to (1, 1, hidden_dim)
-            orig_norm = hidden.norm(dim=-1, keepdim=True)
-            hidden = hidden + eps * v.unsqueeze(0).unsqueeze(0)
-            # Norm-clipping guardrail (Activation Transport insight):
-            # prevent steering from pushing activations OOD
-            new_norm = hidden.norm(dim=-1, keepdim=True)
-            max_norm = orig_norm * 1.5  # allow 50% norm increase max
-            scale = torch.clamp(max_norm / new_norm.clamp(min=1e-8), max=1.0)
-            hidden = hidden * scale
+            hidden = self._apply_steering(hidden, v, eps)
+
+            if rest is not None:
+                return (hidden,) + rest
+            return hidden
+        return hook_fn
+
+    def _make_hook_binned(self, layer_idx):
+        """Hook for Strategy B: select vector based on current timestep bin."""
+        def hook_fn(module, input, output):
+            bin_idx = self._get_bin_index()
+            if bin_idx not in self.binned_vectors:
+                return output
+            bin_vecs = self.binned_vectors[bin_idx]
+            if layer_idx not in bin_vecs:
+                return output
+
+            if isinstance(output, tuple):
+                hidden = output[0]
+                rest = output[1:]
+            else:
+                hidden = output
+                rest = None
+
+            eps = self._get_eps(layer_idx)
+            v = bin_vecs[layer_idx].to(hidden.device, hidden.dtype)
+            hidden = self._apply_steering(hidden, v, eps)
 
             if rest is not None:
                 return (hidden,) + rest
@@ -97,11 +168,20 @@ class SteeringHook:
 # ---------------------------------------------------------------------------
 
 def generate_steered(pipe, n_images, concept_vectors, epsilon=DEFAULT_EPSILON,
-                     class_ids=None, strategy="A"):
+                     class_ids=None, strategy="A", binned_vectors=None,
+                     epsilon_schedule=None, norm_clip=1.5):
     """Generate images with concept steering applied."""
     transformer = get_dit_transformer(pipe)
 
-    steering = SteeringHook(transformer, concept_vectors, epsilon=epsilon, strategy=strategy)
+    steering = SteeringHook(
+        transformer, concept_vectors, epsilon=epsilon, strategy=strategy,
+        binned_vectors=binned_vectors, epsilon_schedule=epsilon_schedule,
+        norm_clip=norm_clip,
+    )
+
+    # Use callback for Strategy B to track denoising step
+    use_callback = strategy == "B" or epsilon_schedule is not None
+    callback_fn = steering.step_callback if use_callback else None
 
     images = []
     used_class_ids = []
@@ -114,12 +194,15 @@ def generate_steered(pipe, n_images, concept_vectors, epsilon=DEFAULT_EPSILON,
         else:
             cids = torch.randint(0, NUM_CLASSES, (batch_size,)).tolist()
 
+        steering.current_step = 0  # reset step counter per batch
+
         with torch.no_grad():
             output = pipe(
                 cids,
                 num_inference_steps=NUM_INFERENCE_STEPS,
                 guidance_scale=GUIDANCE_SCALE,
                 output_type="pil",
+                callback_on_step_end=callback_fn,
             )
 
         images.extend(output.images)
@@ -160,6 +243,39 @@ def generate_baseline(pipe, n_images, class_ids=None):
 # Load concept vectors
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Epsilon schedules for timestep-dependent steering strength
+# ---------------------------------------------------------------------------
+
+def schedule_constant(step, total_steps):
+    """Constant schedule (no modulation)."""
+    return 1.0
+
+def schedule_linear_decay(step, total_steps):
+    """Linear decay: full strength at start, zero at end."""
+    return 1.0 - step / max(total_steps - 1, 1)
+
+def schedule_linear_ramp(step, total_steps):
+    """Linear ramp: zero at start, full strength at end."""
+    return step / max(total_steps - 1, 1)
+
+def schedule_cosine(step, total_steps):
+    """Cosine schedule: peaks in the middle of denoising."""
+    import math
+    return 0.5 * (1 + math.cos(math.pi * (2 * step / max(total_steps - 1, 1) - 1)))
+
+SCHEDULES = {
+    "constant": schedule_constant,
+    "linear_decay": schedule_linear_decay,
+    "linear_ramp": schedule_linear_ramp,
+    "cosine": schedule_cosine,
+}
+
+
+# ---------------------------------------------------------------------------
+# Load concept vectors
+# ---------------------------------------------------------------------------
+
 METHOD_FILE_MAP = {"rfm": "rfm", "mean_diff": "meandiff", "pca": "pca", "logreg": "logreg"}
 
 def load_concept_vectors(concept_name, method="rfm", layers=None):
@@ -178,6 +294,57 @@ def load_concept_vectors(concept_name, method="rfm", layers=None):
         print(f"  WARNING: No vectors found for {concept_name}/{method} in {vec_dir}")
 
     return vectors
+
+
+def load_binned_vectors(concept_name, method="mean_diff", n_bins=4, layers=None):
+    """Load time-binned concept vectors for Strategy B.
+
+    Expects vectors saved by extract.py --mode stability, named like:
+        {concept}_layer{L}_step{S}_meandiff.pt
+
+    Groups captured steps into n_bins equal bins.
+
+    Returns:
+        binned: dict of {bin_idx: {layer_idx: vector}}
+    """
+    vec_dir = Path(VECTORS_DIR)
+    file_suffix = METHOD_FILE_MAP.get(method, method)
+
+    # Find all step-specific vectors
+    step_vectors = {}  # {(layer, step): vector}
+    for f in vec_dir.glob(f"{concept_name}_layer*_step*_{file_suffix}.pt"):
+        data = torch.load(f, map_location="cpu", weights_only=True)
+        layer_idx = data.get("layer", int(f.stem.split("layer")[1].split("_")[0]))
+        step = data.get("step", int(f.stem.split("step")[1].split("_")[0]))
+        if layers is None or layer_idx in layers:
+            step_vectors[(layer_idx, step)] = data["vector"]
+
+    if not step_vectors:
+        print(f"  WARNING: No step-specific vectors for {concept_name}/{method}")
+        return {}
+
+    # Get unique steps and layers
+    all_steps = sorted(set(s for _, s in step_vectors.keys()))
+    all_layers = sorted(set(l for l, _ in step_vectors.keys()))
+
+    # Assign steps to bins
+    binned = {}
+    for bin_idx in range(n_bins):
+        bin_start = len(all_steps) * bin_idx // n_bins
+        bin_end = len(all_steps) * (bin_idx + 1) // n_bins
+        bin_steps = all_steps[bin_start:bin_end]
+
+        binned[bin_idx] = {}
+        for layer_idx in all_layers:
+            # Average vectors in this bin
+            vecs = [step_vectors[(layer_idx, s)] for s in bin_steps
+                    if (layer_idx, s) in step_vectors]
+            if vecs:
+                avg = torch.stack(vecs).mean(dim=0)
+                avg = avg / avg.norm()
+                binned[bin_idx][layer_idx] = avg
+
+    return binned
 
 
 # ---------------------------------------------------------------------------

@@ -83,6 +83,99 @@ class ActivationCollector:
         self.hooks = []
 
 
+class MultiStepActivationCollector:
+    """Collect activations at multiple denoising steps via a scheduler callback.
+
+    Usage:
+        collector = MultiStepActivationCollector(transformer, capture_steps=[0, 5, 10, 15, 20, 24])
+        # Pass collector.callback to the pipeline call
+        output = pipe(..., callback_on_step_end=collector.callback)
+        # collector.step_activations[step_idx][layer_idx] = (n_batch, hidden_dim)
+    """
+
+    def __init__(self, transformer, layers=None, capture_steps=None):
+        self.transformer = transformer
+        self.capture_steps = set(capture_steps) if capture_steps else None
+        self.current_step = 0
+        self.step_activations = {}  # {step: {layer_idx: (batch, hidden_dim)}}
+        self._inner = ActivationCollector(transformer, layers=layers)
+
+    def callback(self, pipe, step, timestep, callback_kwargs):
+        """Pipeline callback — called after each denoising step."""
+        if self.capture_steps is None or step in self.capture_steps:
+            # The inner collector already captured activations from the last forward pass
+            self.step_activations[step] = {}
+            for layer_idx, act in self._inner.activations.items():
+                self.step_activations[step][layer_idx] = act.clone()
+        self._inner.clear()
+        self.current_step = step + 1
+        return callback_kwargs
+
+    def clear(self):
+        self.step_activations = {}
+        self.current_step = 0
+        self._inner.clear()
+
+    def remove_hooks(self):
+        self._inner.remove_hooks()
+
+
+def generate_and_collect_multistep(pipe, n_samples, collector, class_ids=None):
+    """Generate images and collect activations at multiple denoising steps.
+
+    Args:
+        collector: MultiStepActivationCollector
+
+    Returns:
+        images: list of PIL images
+        step_activations: {step: {layer_idx: (n_samples, hidden_dim)}}
+        used_class_ids: list
+    """
+    images = []
+    all_step_activations = {}  # {step: {layer: [batches]}}
+    used_class_ids = []
+
+    for i in tqdm(range(0, n_samples, EVAL_BATCH_SIZE), desc="Generating (multi-step)"):
+        batch_size = min(EVAL_BATCH_SIZE, n_samples - i)
+
+        if class_ids is not None:
+            cids = class_ids[i:i + batch_size]
+        else:
+            cids = torch.randint(0, NUM_CLASSES, (batch_size,)).tolist()
+
+        collector.clear()
+
+        with torch.no_grad():
+            output = pipe(
+                cids,
+                num_inference_steps=NUM_INFERENCE_STEPS,
+                guidance_scale=GUIDANCE_SCALE,
+                output_type="pil",
+                callback_on_step_end=collector.callback,
+            )
+
+        images.extend(output.images)
+        used_class_ids.extend(cids)
+
+        # Accumulate per-step activations
+        for step, layer_acts in collector.step_activations.items():
+            if step not in all_step_activations:
+                all_step_activations[step] = {}
+            for layer_idx, act in layer_acts.items():
+                if layer_idx not in all_step_activations[step]:
+                    all_step_activations[step][layer_idx] = []
+                all_step_activations[step][layer_idx].append(act)
+
+    # Stack
+    stacked = {}
+    for step, layer_acts in all_step_activations.items():
+        stacked[step] = {}
+        for layer_idx, act_list in layer_acts.items():
+            stacked[step][layer_idx] = torch.cat(act_list, dim=0)
+
+    return images, stacked, used_class_ids
+
+
 # ---------------------------------------------------------------------------
 # Data generation + activation collection
 # ---------------------------------------------------------------------------
@@ -385,6 +478,137 @@ def validate_nfa(pipe, timesteps, n_samples=NFA_N_SAMPLES):
 
 
 # ---------------------------------------------------------------------------
+# Modified NFA: adaLN-conditioned weights
+# ---------------------------------------------------------------------------
+
+def validate_nfa_adaln(pipe, n_samples=NFA_N_SAMPLES):
+    """Validate the modified NFA: does W_eff(t)^T W_eff(t) ∝ AGOP?
+
+    The hypothesis (from research log theory section): the NFA fails for raw
+    weights because DiT weights are shared across timesteps, but should hold
+    for the effective weights W_eff(t) = diag(gate_mlp(t)) @ W_ff @ diag(1 + scale_mlp(t)).
+
+    For ada_norm_zero DiT blocks, the FF path is:
+        norm_hidden = norm3(h) * (1 + scale_mlp) + shift_mlp
+        ff_out = gate_mlp * ff(norm_hidden)
+
+    So the effective first-layer weight is modulated by scale_mlp (input) and
+    gate_mlp (output). We compute W_eff = diag(gate_mlp_mean) @ W @ diag(1 + scale_mlp_mean)
+    where the means are averaged over samples at a single denoising step.
+    """
+    transformer = get_dit_transformer(pipe)
+    blocks = transformer.transformer_blocks
+
+    # We need to collect the adaLN modulation parameters during generation.
+    # Hook into norm1 to capture gate_mlp and scale_mlp.
+    adaln_params = {}  # layer_idx -> {"gate_mlp": list, "scale_mlp": list}
+
+    def make_adaln_hook(layer_idx):
+        def hook_fn(module, input, output):
+            # output of norm1 for ada_norm_zero:
+            # (norm_hidden, gate_msa, shift_mlp, scale_mlp, gate_mlp)
+            if isinstance(output, tuple) and len(output) == 5:
+                _, _, shift_mlp, scale_mlp, gate_mlp = output
+                # Take conditional half if CFG doubled the batch
+                batch_size = scale_mlp.shape[0]
+                if batch_size > 1 and batch_size % 2 == 0:
+                    scale_mlp = scale_mlp[:batch_size // 2]
+                    gate_mlp = gate_mlp[:batch_size // 2]
+                if layer_idx not in adaln_params:
+                    adaln_params[layer_idx] = {"gate_mlp": [], "scale_mlp": []}
+                adaln_params[layer_idx]["gate_mlp"].append(gate_mlp.detach().cpu().float())
+                adaln_params[layer_idx]["scale_mlp"].append(scale_mlp.detach().cpu().float())
+        return hook_fn
+
+    # Register hooks on norm1 of each block
+    adaln_hooks = []
+    for idx, block in enumerate(blocks):
+        h = block.norm1.register_forward_hook(make_adaln_hook(idx))
+        adaln_hooks.append(h)
+
+    # Also collect activations for AGOP
+    collector = ActivationCollector(transformer)
+    images, activations, class_ids = generate_and_collect(pipe, n_samples, collector)
+    collector.remove_hooks()
+
+    # Remove adaLN hooks
+    for h in adaln_hooks:
+        h.remove()
+
+    results_raw = {}
+    results_adaln = {}
+
+    for layer_idx in range(len(blocks)):
+        if layer_idx not in activations or layer_idx not in adaln_params:
+            continue
+
+        acts = activations[layer_idx].float()
+        block = blocks[layer_idx]
+
+        # Get raw FF weight matrix
+        W = None
+        for name, param in block.named_parameters():
+            if 'ff.net.0' in name and 'weight' in name:
+                W = param.detach().cpu().float()
+                break
+            elif 'proj' in name and 'weight' in name and W is None:
+                W = param.detach().cpu().float()
+
+        if W is None or W.dim() != 2:
+            continue
+
+        # Average adaLN params over all samples (last denoising step captured)
+        gate_mlp_all = torch.cat(adaln_params[layer_idx]["gate_mlp"], dim=0)
+        scale_mlp_all = torch.cat(adaln_params[layer_idx]["scale_mlp"], dim=0)
+        gate_mlp_mean = gate_mlp_all.mean(dim=0)   # (d_out,) or (d,)
+        scale_mlp_mean = scale_mlp_all.mean(dim=0)  # (d,)
+
+        # Raw NFA: W^T W
+        nfm_raw = W.T @ W
+
+        # Modified NFA: W_eff = diag(gate) @ W @ diag(1 + scale)
+        # W is (d_out, d_in). gate modulates output, scale modulates input.
+        d_out, d_in = W.shape
+        # gate_mlp is (d,) where d = hidden_dim. It modulates the FF output.
+        # scale_mlp modulates the FF input (after norm3).
+        # Sizes may not match W exactly if W is the up-projection (d_in -> 4*d_in).
+        # Handle dimension mismatches gracefully.
+        if gate_mlp_mean.shape[0] == d_out and scale_mlp_mean.shape[0] == d_in:
+            W_eff = torch.diag(gate_mlp_mean) @ W @ torch.diag(1 + scale_mlp_mean)
+        elif gate_mlp_mean.shape[0] == d_in and scale_mlp_mean.shape[0] == d_in:
+            # gate and scale both match input dim — apply as input modulation
+            W_eff = W @ torch.diag((1 + scale_mlp_mean) * gate_mlp_mean)
+        else:
+            # Fallback: just modulate input side with scale
+            if scale_mlp_mean.shape[0] == d_in:
+                W_eff = W @ torch.diag(1 + scale_mlp_mean)
+            else:
+                W_eff = W  # can't modulate, skip
+
+        nfm_adaln = W_eff.T @ W_eff
+
+        # AGOP from activations
+        acts_centered = acts - acts.mean(dim=0)
+        agop = (acts_centered.T @ acts_centered) / acts_centered.shape[0]
+        agop_flat = agop.flatten()
+
+        # Cosine similarity: raw
+        cos_raw = torch.nn.functional.cosine_similarity(
+            nfm_raw.flatten().unsqueeze(0), agop_flat.unsqueeze(0)
+        ).item()
+
+        # Cosine similarity: adaLN-modulated
+        cos_adaln = torch.nn.functional.cosine_similarity(
+            nfm_adaln.flatten().unsqueeze(0), agop_flat.unsqueeze(0)
+        ).item()
+
+        results_raw[layer_idx] = cos_raw
+        results_adaln[layer_idx] = cos_adaln
+
+    return results_raw, results_adaln
+
+
+# ---------------------------------------------------------------------------
 # Temporal stability
 # ---------------------------------------------------------------------------
 
@@ -422,7 +646,8 @@ def compute_temporal_stability(concept_vectors_by_t):
 def main():
     parser = argparse.ArgumentParser(description="LASD extraction pipeline")
     parser.add_argument("--mode", required=True,
-                        choices=["nfa_validate", "probe", "extract", "stability"])
+                        choices=["nfa_validate", "nfa_adaln", "probe", "extract",
+                                 "stability", "probe_multistep"])
     parser.add_argument("--model", default="dit-s2")
     parser.add_argument("--concepts", default="brightness,colorfulness",
                         help="Comma-separated concept names")
@@ -573,13 +798,138 @@ def main():
         )
 
     # ------------------------------------------------------------------
+    elif args.mode == "nfa_adaln":
+        print("Stage 0b: Modified NFA Validation (adaLN-conditioned weights)")
+        results_raw, results_adaln = validate_nfa_adaln(pipe, n_samples=args.n_samples)
+
+        print("\n  Layer | Raw NFA cos | adaLN NFA cos")
+        print("  " + "-" * 42)
+        for layer_idx in sorted(results_raw.keys()):
+            raw = results_raw[layer_idx]
+            adaln = results_adaln[layer_idx]
+            marker = " **" if adaln > raw + 0.05 else ""
+            print(f"  {layer_idx:5d} | {raw:11.4f} | {adaln:13.4f}{marker}")
+
+        raw_vals = list(results_raw.values())
+        adaln_vals = list(results_adaln.values())
+        mean_raw = np.mean(raw_vals) if raw_vals else 0.0
+        mean_adaln = np.mean(adaln_vals) if adaln_vals else 0.0
+        max_adaln = max(adaln_vals) if adaln_vals else 0.0
+
+        print(f"\n  Mean raw:   {mean_raw:.4f}")
+        print(f"  Mean adaLN: {mean_adaln:.4f}")
+        print(f"  Max adaLN:  {max_adaln:.4f}")
+
+        print_summary(
+            nfa_cosine_raw=mean_raw,
+            nfa_cosine_adaln=mean_adaln,
+            nfa_cosine_adaln_max=max_adaln,
+            n_layers_above_07=sum(1 for v in adaln_vals if v > 0.7),
+            peak_vram_mb=get_peak_memory_mb(),
+            wall_seconds=timer.elapsed(),
+        )
+
+    # ------------------------------------------------------------------
     elif args.mode == "stability":
         print("Stage 1b: Temporal Stability Analysis")
-        # For now, collect activations from the last step only
-        # TODO: hook into multiple denoising steps
-        print("  (temporal stability requires multi-step hooks — not yet implemented)")
+        concept_names = args.concepts.split(",")
+
+        # Capture at 6 evenly spaced denoising steps
+        n_steps = NUM_INFERENCE_STEPS
+        capture_steps = [0, n_steps // 5, 2 * n_steps // 5,
+                         3 * n_steps // 5, 4 * n_steps // 5, n_steps - 1]
+        print(f"  Capturing at steps: {capture_steps}")
+
+        collector = MultiStepActivationCollector(
+            transformer, layers=target_layers, capture_steps=capture_steps
+        )
+        images, step_activations, class_ids = generate_and_collect_multistep(
+            pipe, args.n_samples, collector
+        )
+        collector.remove_hooks()
+
+        for concept_name in concept_names:
+            if concept_name not in CONCEPTS:
+                continue
+            concept_cfg = CONCEPTS[concept_name]
+            labels = get_concept_labels(concept_cfg, images, class_ids)
+            labels_t = torch.tensor(labels, dtype=torch.float32)
+            mask = labels_t != 0
+
+            print(f"\n  Concept: {concept_name}")
+
+            # For each layer, extract mean-diff vectors at each captured step
+            for layer_idx in (target_layers or list(range(NUM_LAYERS))):
+                vectors_by_step = {}
+                for step in capture_steps:
+                    if step in step_activations and layer_idx in step_activations[step]:
+                        acts = step_activations[step][layer_idx]
+                        acts_valid = acts[mask]
+                        labels_valid = labels_t[mask]
+                        vec = extract_concept_vector_mean_diff(acts_valid, labels_valid)
+                        vectors_by_step[step] = vec
+
+                if len(vectors_by_step) >= 2:
+                    stability, pairwise = compute_temporal_stability(vectors_by_step)
+                    print(f"    Layer {layer_idx:2d}: stability={stability:.3f} "
+                          f"(across {len(vectors_by_step)} steps)")
+
+                    # Save per-step vectors for Strategy B
+                    for step, vec in vectors_by_step.items():
+                        torch.save(
+                            {"vector": vec, "method": "mean_diff", "layer": layer_idx, "step": step},
+                            Path(VECTORS_DIR) / f"{concept_name}_layer{layer_idx}_step{step}_meandiff.pt"
+                        )
+
         print_summary(
-            stability=0.0,
+            peak_vram_mb=get_peak_memory_mb(),
+            wall_seconds=timer.elapsed(),
+        )
+
+    # ------------------------------------------------------------------
+    elif args.mode == "probe_multistep":
+        print("Stage 1c: Multi-timestep Probing")
+        concept_names = args.concepts.split(",")
+
+        n_steps = NUM_INFERENCE_STEPS
+        capture_steps = [0, n_steps // 4, n_steps // 2,
+                         3 * n_steps // 4, n_steps - 1]
+        print(f"  Capturing at steps: {capture_steps}")
+
+        probe_layers = target_layers or [0, 7, 14, 21, 27]
+
+        collector = MultiStepActivationCollector(
+            transformer, layers=probe_layers, capture_steps=capture_steps
+        )
+        images, step_activations, class_ids = generate_and_collect_multistep(
+            pipe, args.n_samples, collector
+        )
+        collector.remove_hooks()
+
+        for concept_name in concept_names:
+            if concept_name not in CONCEPTS:
+                continue
+            concept_cfg = CONCEPTS[concept_name]
+            labels = get_concept_labels(concept_cfg, images, class_ids)
+            labels_t = torch.tensor(labels)
+
+            print(f"\n  Concept: {concept_name}")
+            print(f"  {'Step':>6s}", end="")
+            for layer_idx in probe_layers:
+                print(f"  L{layer_idx:02d}", end="")
+            print()
+
+            for step in capture_steps:
+                print(f"  {step:6d}", end="")
+                for layer_idx in probe_layers:
+                    if step in step_activations and layer_idx in step_activations[step]:
+                        acc, _ = linear_probe(step_activations[step][layer_idx], labels_t)
+                        print(f"  {acc:.2f}", end="")
+                    else:
+                        print(f"    - ", end="")
+                print()
+
+        print_summary(
             peak_vram_mb=get_peak_memory_mb(),
             wall_seconds=timer.elapsed(),
         )
