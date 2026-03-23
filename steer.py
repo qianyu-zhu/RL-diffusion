@@ -37,7 +37,7 @@ class SteeringHook:
 
     def __init__(self, transformer, concept_vectors, epsilon=DEFAULT_EPSILON,
                  strategy="A", epsilon_schedule=None, binned_vectors=None,
-                 norm_clip=1.5):
+                 norm_clip=1.5, norm_scale=False):
         """
         Args:
             transformer: DiT transformer module
@@ -47,6 +47,7 @@ class SteeringHook:
             epsilon_schedule: optional callable(step_index, total_steps) -> float
             binned_vectors: for strategy B, dict of {bin_idx: {layer_idx: (d,) tensor}}
             norm_clip: max ratio for norm clipping (1.5 = allow 50% increase)
+            norm_scale: if True, scale perturbation by activation norm (Wang et al. 2026)
         """
         self.transformer = transformer
         self.concept_vectors = concept_vectors
@@ -55,6 +56,7 @@ class SteeringHook:
         self.epsilon_schedule = epsilon_schedule
         self.binned_vectors = binned_vectors
         self.norm_clip = norm_clip
+        self.norm_scale = norm_scale
         self.current_step = 0
         self.total_steps = NUM_INFERENCE_STEPS
         self.hooks = []
@@ -125,9 +127,20 @@ class SteeringHook:
                     self.hooks.append(hook)
 
     def _apply_steering(self, hidden, v, eps):
-        """Apply steering vector with norm clipping."""
+        """Apply steering vector with norm clipping.
+
+        Two modes:
+          - norm_scale=False (default): h + eps * v  (our original formula)
+          - norm_scale=True: h + eps * ||h|| * v  (Wang et al. 2026 formula)
+        """
         orig_norm = hidden.norm(dim=-1, keepdim=True)
-        hidden = hidden + eps * v.unsqueeze(0).unsqueeze(0)
+
+        if getattr(self, 'norm_scale', False):
+            # Wang et al. 2026: scale by activation norm
+            hidden = hidden + eps * orig_norm * v.unsqueeze(0).unsqueeze(0)
+        else:
+            hidden = hidden + eps * v.unsqueeze(0).unsqueeze(0)
+
         if self.norm_clip > 0:
             new_norm = hidden.norm(dim=-1, keepdim=True)
             max_norm = orig_norm * self.norm_clip
@@ -199,14 +212,14 @@ class SteeringHook:
 
 def generate_steered(pipe, n_images, concept_vectors, epsilon=DEFAULT_EPSILON,
                      class_ids=None, strategy="A", binned_vectors=None,
-                     epsilon_schedule=None, norm_clip=1.5):
+                     epsilon_schedule=None, norm_clip=1.5, norm_scale=False):
     """Generate images with concept steering applied."""
     transformer = get_dit_transformer(pipe)
 
     steering = SteeringHook(
         transformer, concept_vectors, epsilon=epsilon, strategy=strategy,
         binned_vectors=binned_vectors, epsilon_schedule=epsilon_schedule,
-        norm_clip=norm_clip,
+        norm_clip=norm_clip, norm_scale=norm_scale,
     )
 
     # Step tracking is handled internally via hooks (no pipeline callback needed)
