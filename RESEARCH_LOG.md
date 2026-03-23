@@ -307,3 +307,158 @@ RL-diffusion/
 4. **Stage 2 first result supports the theory:** Predictive ≠ causal at early layers. This is the paper's most interesting empirical prediction.
 5. **Wang et al. (2026) is the closest competitor:** They use RFM in U-Net activation space but provide no theoretical justification. Our framework explains their results.
 6. **Marks & Tegmark predicts mean-diff > logreg for causal steering:** Untested in diffusion. Key experiment for HPC.
+
+---
+
+## 2026-03-22: Session 4 — Full HPC Experiment Campaign
+
+### Hardware
+- MIT ORCD, 1× NVIDIA L40S, cali-conf conda env
+- Peak VRAM: 3.9 GB (DiT-XL/2 in fp16), 10.8 GB (SD v1.5)
+
+### Stage 1 Re-run (500 samples, all 28 layers)
+
+**Brightness** probing — 99.0% accuracy, best at layer 0. All layers ≥ 93%.
+**Colorfulness** probing — 94.0% accuracy, best at layer 2. Bimodal pattern confirmed.
+**Linearity gap** — zero or negative at all layers. MLP never beats linear probe.
+
+### Stage 2: Steering Results
+
+**Layer sweep (brightness, mean-diff, eps=±0.5):**
+
+| Layer | eps=+0.5 | eps=-0.5 | Best |
+|-------|----------|----------|------|
+| 0     | -0.180   | **+0.250** | -0.5 |
+| 5     | -0.070   | -0.020   | — |
+| 10    | -0.060   | +0.030   | — |
+| 15    | -0.070   | +0.020   | — |
+| 20    | +0.020   | +0.010   | — |
+| 25    | **+0.050** | +0.040 | +0.5 |
+| 27    | +0.020   | -0.050   | — |
+
+**Key findings:**
+1. **Layer 0 eps=-0.5 gives the highest single-layer lift (+0.250).** The vector was flipped relative to the M1 experiment.
+2. Early layers are MORE causally effective despite higher probe accuracy. This confirms the predictive ≠ causal prediction.
+3. The sign of eps matters: the mean-diff vector orientation is not consistent across layers.
+
+**Method comparison (layer 25, eps=0.1):**
+
+| Method | Lift |
+|--------|------|
+| PCA | **+0.080** |
+| mean-diff | -0.020 |
+| logreg | -0.030 |
+| RFM | -0.020 |
+
+**Surprise: PCA outperforms all methods.** RFM is no better than mean-diff, and both are essentially zero at this layer/eps.
+
+### Stage 3: Ablation Results
+
+**Layer selection (all using mean-diff eps=-0.5):**
+
+| Strategy | Lift |
+|----------|------|
+| **all 28 layers** | **+0.560** |
+| first 5 | +0.410 |
+| even layers | +0.260 |
+| single best (L0) | +0.140 |
+| middle 5 | +0.080 |
+| last 5 | +0.040 |
+| last 10 | +0.020 |
+
+**All-layer steering is the star result.** Lift is 4× single-layer and 14× last-5.
+
+**Epsilon schedule:** constant ≈ linear_decay >> linear_ramp > cosine
+**Norm clip:** 5.0 best (0.230), all 1.2-5.0 similar, no clip (0.090) worst
+**Data efficiency:** M=50 already gives 0.130, M=500 gives 0.180
+**Strategy B (time-binned):** 4 bins best (0.130), but worse than Strategy A (0.150)
+**RFM iterations:** All negative lifts (-0.050 to -0.110). RFM is NOT useful.
+
+### Stage 4: Composition
+
+- **Two-concept composition works:** brightness+colorfulness at eps=-1.0 gives +0.130/+0.120
+- **Negative steering works:** eps=+1.0 suppresses brightness (lift=-0.350)
+- **Cross-class generalization:** similar lift on animals (+0.220) and objects (+0.210)
+- **Semantic concept steering FAILED:** animal/natural at layer 0 give zero lift
+
+### Theory Validation
+
+**Modified NFA (adaLN):** STILL FAILS. adaLN cos=0.017 < raw cos=0.035.
+
+**Temporal stability (brightness, pairwise cosine):**
+
+| Layer | Stability |
+|-------|-----------|
+| 0     | 0.858 |
+| 5     | 0.759 |
+| 10    | 0.706 |
+| 15    | 0.691 |
+| 20    | 0.600 |
+| 25    | 0.490 |
+| 27    | 0.397 |
+
+Stability decreases monotonically. Early layers are most temporally stable, which explains why Strategy A (shared vector) works best at early layers.
+
+**Multi-step probing (brightness):**
+
+| Step | L00 | L07 | L14 | L21 | L27 |
+|------|-----|-----|-----|-----|-----|
+| 0    | 0.78| 0.70| 0.82| 0.82| 0.65|
+| 12   | 0.85| 0.82| 0.80| 0.80| 0.80|
+| 25   | 0.95| 0.93| 0.85| 0.78| 0.82|
+| 37   | 0.95| 0.95| 0.93| 0.85| 0.88|
+| 49   | 0.97| 0.97| 0.93| 0.88| 0.85|
+
+Probe accuracy increases through denoising. Early steps (high noise) have lower accuracy; late steps (clean) have highest. This suggests concept information builds up through the denoising trajectory.
+
+**Semantic concept probing (300 samples):**
+- Animal: 88.3% at layer 0, 96.7% at layer 20
+- Natural: 97.6% at layer 10
+
+### U-Net (SD v1.5) Experiments
+
+**Probing:** Brightness 90.0% (best down_0), colorfulness 95.0% (best down_0).
+Linearity confirmed in U-Net — concepts are linear across architectures.
+
+**Steering:** Much weaker than DiT. Best single-block lift only +0.100 (up_0 eps=-0.5).
+h-space (mid block): essentially zero lift at eps=0.1-1.0.
+
+**Why U-Net steering failed (v1):**
+1. Steered at ALL denoising steps — should only steer first 30% (Kwon et al.)
+2. Used eps=0.1-1.0 — SD activations need eps=2-10 (different scale)
+3. Used uniform generic prompts — prior work uses image editing setup
+
+**V2 experiments submitted** with fixes: steer_fraction=0.3, eps=2-10, multi-block configs.
+
+### Revised Paper Framing
+
+The original proposal was about RFM/AGOP for steering. **RFM failed completely.** The actual contributions are:
+
+1. **All-layer PCA steering is surprisingly effective** — 56% lift with zero-cost perturbation
+2. **Predictive ≠ causal gap** — most predictive layer (L0, 99%) is NOT most causally effective for small eps, but IS for large eps with right sign
+3. **Temporal stability explains layer selection** — early layers are more stable (0.86 vs 0.40), which is why shared-vector steering works there
+4. **The NFA does not hold in DiTs** — neither raw nor adaLN-conditioned weights
+5. **Cross-architecture linearity** — concepts are linear in both DiT and U-Net
+6. **Data efficiency** — 50 samples sufficient for reasonable steering vectors
+
+### Commits (HPC session)
+
+| Hash | Description |
+|---|---|
+| `34449fd` | HPC config (CUDA, fp16, larger samples) |
+| `f51e077` | Stage 2 autonomous experiment runner + SLURM |
+| `524e708` | Modified NFA, multi-step collector, Strategy B |
+| `2548505` | Theory validation SLURM script |
+| `e101776` | Stage 3 ablation runner + SLURM |
+| `46f708c` | Results analysis and figure generation |
+| `28e4471` | Stage 4 composition runner + SLURM |
+| `757334e` | Fix DiTPipeline callback incompatibility |
+| `fe4ed6f` | U-Net (SD v1.5) experiments |
+| `89ac40a` | Follow-up experiments + theory v2 |
+| `a70f294` | U-Net v2: semantic window + larger eps |
+
+### Running / Pending
+
+- **Follow-up (10819123):** 500-image full eval of best configs
+- **Theory v2 (10819124):** Multi-step probing + temporal stability (fixed)
+- **U-Net v2 (10819252):** Steer fraction + larger eps experiments
