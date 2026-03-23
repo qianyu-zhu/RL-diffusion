@@ -117,22 +117,44 @@ class UNetActivationCollector:
 
 
 class UNetSteeringHook:
-    """Inject concept vectors into U-Net activations during denoising."""
+    """Inject concept vectors into U-Net activations during denoising.
 
-    def __init__(self, unet, concept_vectors, epsilon=0.1, norm_clip=1.5):
+    Key insight from Kwon et al. (ICLR 2023): editing is only effective
+    during the first ~30% of denoising steps (high-noise, semantic region).
+    Later steps control fine details and should not be perturbed.
+    """
+
+    def __init__(self, unet, concept_vectors, epsilon=0.1, norm_clip=1.5,
+                 steer_fraction=0.3):
         """
         Args:
             unet: UNet2DConditionModel
             concept_vectors: dict of {hook_point_name: (C,) tensor}
             epsilon: steering strength
             norm_clip: max norm ratio (0 = no clip)
+            steer_fraction: fraction of early denoising steps to steer (0.3 = first 30%)
         """
         self.unet = unet
         self.concept_vectors = concept_vectors
         self.epsilon = epsilon
         self.norm_clip = norm_clip
+        self.steer_fraction = steer_fraction
+        self.current_step = 0
+        self.total_steps = NUM_INFERENCE_STEPS
         self.hooks = []
         self._register_hooks()
+
+    def step_callback(self, pipe, step, timestep, callback_kwargs):
+        """SD pipeline callback to track current step."""
+        self.current_step = step + 1
+        return callback_kwargs
+
+    @property
+    def _should_steer(self):
+        """Only steer during the semantic editing window (first N% of steps)."""
+        if self.steer_fraction >= 1.0:
+            return True
+        return self.current_step < int(self.total_steps * self.steer_fraction)
 
     def _register_hooks(self):
         for point_name, vec in self.concept_vectors.items():
@@ -154,6 +176,9 @@ class UNetSteeringHook:
 
     def _make_hook(self, concept_vec):
         def hook_fn(module, input, output):
+            if not self._should_steer:
+                return output
+
             if isinstance(output, tuple):
                 hidden = output[0]
                 rest = output[1:]
@@ -239,11 +264,16 @@ def generate_sd_and_collect(pipe, n_samples, collector, prompts=None):
 
 
 def generate_sd_steered(pipe, n_images, concept_vectors, epsilon=0.1,
-                        prompts=None, norm_clip=1.5):
-    """Generate steered images with SD."""
+                        prompts=None, norm_clip=1.5, steer_fraction=0.3):
+    """Generate steered images with SD.
+
+    Args:
+        steer_fraction: fraction of early denoising steps to steer (0.3 = first 30%,
+                        per Kwon et al. ICLR 2023). Set to 1.0 to steer all steps.
+    """
     unet = get_unet(pipe)
     steering = UNetSteeringHook(unet, concept_vectors, epsilon=epsilon,
-                                norm_clip=norm_clip)
+                                norm_clip=norm_clip, steer_fraction=steer_fraction)
 
     if prompts is None:
         base_prompts = [
@@ -259,12 +289,15 @@ def generate_sd_steered(pipe, n_images, concept_vectors, epsilon=0.1,
         batch_size = min(EVAL_BATCH_SIZE, n_images - i)
         batch_prompts = prompts[i:i + batch_size]
 
+        steering.current_step = 0  # reset step counter per batch
+
         with torch.no_grad():
             output = pipe(
                 batch_prompts,
                 num_inference_steps=NUM_INFERENCE_STEPS,
                 guidance_scale=GUIDANCE_SCALE,
                 output_type="pil",
+                callback_on_step_end=steering.step_callback,
             )
         images.extend(output.images)
 
