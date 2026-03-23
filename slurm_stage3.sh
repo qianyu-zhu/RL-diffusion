@@ -7,7 +7,7 @@
 #SBATCH --time=06:00:00
 #SBATCH --output=logs/stage3_%j.out
 #SBATCH --error=logs/stage3_%j.err
-#SBATCH --dependency=afterok:10775255
+# No dependency — Stage 2 already completed
 
 # LASD Stage 3: Ablation studies
 # Depends on Stage 2 job (10775255) completing successfully

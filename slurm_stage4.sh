@@ -7,7 +7,7 @@
 #SBATCH --time=06:00:00
 #SBATCH --output=logs/stage4_%j.out
 #SBATCH --error=logs/stage4_%j.err
-#SBATCH --dependency=afterok:10775637
+# No dependency — earlier stages completed
 
 # LASD Stage 4: Composition and Scale
 # Depends on Stage 3 (which depends on Stage 2)
