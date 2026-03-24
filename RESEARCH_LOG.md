@@ -753,3 +753,25 @@ FID computation returned negative values (~-180). Implementation bug in matrix s
 | CFG test | ✓ | Brightness still works at CFG=1.0 |
 | Class steering | ✓ | Panda +0.900, noisy classifier |
 
+
+### FID Results (Fixed)
+
+| Config | FID (vs unsteered) | Lift |
+|--------|-------------------|------|
+| all-layer MD eps=-0.5 | **70.4** | +0.575 |
+| first5 MD eps=-0.5 | 61.8 | +0.410 |
+| L0 MD eps=-0.5 | 62.3 | +0.176 |
+| L0 MD eps=-0.1 | **60.7** | ~0.05 |
+| warmth all-layer eps=-0.5 | 63.1 | +0.230 |
+
+FID measures quality DEGRADATION from steering (baseline = 0 by construction).
+Best quality-lift tradeoff: first5 at FID 61.8 with +0.410 lift.
+
+### Running: Pareto Frontier (job 10883313)
+
+500-image FID + CLIP for:
+- Brightness at eps = -0.05, -0.1, -0.2, -0.3, -0.5, -0.7, -1.0
+- Animal at eps = +1, +2, +5, +7, +10
+- Natural at eps = -1, -2, -5, -7, -10
+- Bootstrap CIs for top 3 configs
+
