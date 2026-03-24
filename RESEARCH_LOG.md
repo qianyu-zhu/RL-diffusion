@@ -853,3 +853,28 @@ Methods: mean-diff, PCA, logreg, RFM
 Evaluation: pixel threshold, CLIP zero-shot, FID, diversity ratio
 Theory validation: Jacobian, orthogonality, adaLN survival, stability, alignment, 25 combos
 
+
+### Data Efficiency with CLIP
+
+| M | Pixel Lift | % of M=500 |
+|---|-----------|------------|
+| 25 | +0.615 | 96.9% |
+| 50 | +0.620 | 97.6% |
+| 100 | +0.625 | 98.4% |
+| 200 | +0.635 | 100.0% |
+| 500 | +0.635 | 100.0% |
+
+**25 samples achieve 97% of maximum lift.** Mean-diff vectors stabilize rapidly.
+
+### Paper Status
+
+- paper.tex: Full draft with all sections (Intro, Related Work, Method, Theory, Experiments, Discussion, Conclusion)
+- appendix.tex: Comprehensive tables from all 890 experiments
+- references.bib: Complete bibliography
+- figures/: Pareto frontier, accumulation validation, method comparison, Wang comparison, qualitative grids
+- Teaser images generated at multiple eps values
+
+Total commits this session: 30+
+Total experiments: 890+
+Total GPU hours: ~8h
+
