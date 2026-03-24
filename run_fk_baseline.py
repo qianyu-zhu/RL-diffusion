@@ -73,25 +73,24 @@ def denoise_one_step(pipe, latent, t, class_id):
             latent_input, timestep=t_input, class_labels=class_input,
         ).sample
 
-    # DiT predicts 8 channels: split into noise and variance (like DiTPipeline does)
-    # Only use the noise prediction (first 4 channels)
-    channels = latent.shape[1]
+    # DiT predicts 8 channels: first 4 = noise, last 4 = learned variance
+    # DiTPipeline does CFG on full 8ch, then splits and discards variance
+    channels = latent.shape[1]  # 4
+
+    # CFG on the full output first (matching DiTPipeline behavior)
     model_output_cond, model_output_uncond = model_output.chunk(2)
+    eps_cond, rest_cond = model_output_cond[:, :channels], model_output_cond[:, channels:]
+    eps_uncond, rest_uncond = model_output_uncond[:, :channels], model_output_uncond[:, channels:]
 
-    # Split noise and learned variance
-    noise_cond = model_output_cond[:, :channels]
-    noise_uncond = model_output_uncond[:, :channels]
+    # CFG on eps only
+    eps = eps_uncond + GUIDANCE_SCALE * (eps_cond - eps_uncond)
+    # Recombine (for the split below)
+    noise_pred = torch.cat([eps, rest_cond], dim=1)
 
-    # CFG on the noise part only
-    noise_pred = noise_uncond + GUIDANCE_SCALE * (noise_cond - noise_uncond)
+    # Split and discard variance (like DiTPipeline line 216-217)
+    model_output_final, _ = torch.split(noise_pred, channels, dim=1)
 
-    # Also need the variance part for the scheduler
-    # Use the conditional variance
-    if model_output_cond.shape[1] > channels:
-        variance = model_output_cond[:, channels:]
-        noise_pred = torch.cat([noise_pred, variance], dim=1)
-
-    step_output = scheduler.step(noise_pred, t, latent)
+    step_output = scheduler.step(model_output_final, t, latent)
     return step_output.prev_sample
 
 
