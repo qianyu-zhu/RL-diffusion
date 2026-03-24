@@ -775,3 +775,49 @@ Best quality-lift tradeoff: first5 at FID 61.8 with +0.410 lift.
 - Natural at eps = -1, -2, -5, -7, -10
 - Bootstrap CIs for top 3 configs
 
+
+### Wang et al. Direct Comparison — Our Method Dominates
+
+| Config | Pixel Lift | CLIP Lift | FID | Diversity |
+|--------|-----------|-----------|-----|-----------|
+| **LASD-allayer (ours)** | **+0.640** | -0.032 | 92.4 | **0.925** |
+| **LASD-first5 (ours)** | +0.420 | +0.013 | **83.1** | **1.053** |
+| LASD-eps=0.1 (ours) | +0.235 | -0.008 | 88.2 | 1.047 |
+| Wang RFM L25 | +0.050 | +0.002 | 82.8 | 1.005 |
+| Wang RFM L25+clip | +0.065 | -0.009 | 82.8 | 1.020 |
+| Wang MD+normscale L25 | +0.680 | **-0.420** | **269.0** | 0.200 |
+| Wang MD+normscale L0 | +0.680 | **-0.567** | **286.6** | 0.075 |
+| LASD+normscale | -0.320 | -0.290 | **341.2** | 0.000 |
+
+**Their RFM: +0.050 lift. Our mean-diff: +0.640. 13× better.**
+**Their norm-scale: FID 269-341, diversity 0.0-0.2. Ours: FID 83-92, diversity 0.93-1.05.**
+
+### Pareto Frontier (500 images)
+
+**Brightness:**
+| eps | Pixel Lift | CLIP Bright | FID |
+|-----|-----------|-------------|-----|
+| -0.05 | +0.116 | +0.001 | 61.5 |
+| -0.1 | +0.174 | -0.002 | 61.7 |
+| -0.2 | +0.362 | -0.002 | 61.0 |
+| -0.3 | +0.460 | -0.011 | 62.6 |
+| -0.5 | +0.582 | -0.040 | 66.3 |
+| -0.7 | +0.604 | -0.085 | 76.3 |
+| -1.0 | +0.638 | -0.196 | 102.7 |
+
+**Animal:**
+| eps | CLIP Animal | FID |
+|-----|------------|-----|
+| +1.0 | +0.017 | 63.9 |
+| +2.0 | +0.044 | 69.2 |
+| +5.0 | +0.141 | 144.8 |
+| +7.0 | +0.209 | 216.3 |
+| +10.0 | +0.265 | 279.4 |
+
+**Natural:**
+| eps | CLIP Natural | FID |
+|-----|-------------|-----|
+| -1.0 | +0.008 | 64.1 |
+| -2.0 | +0.031 | 69.0 |
+| -5.0 | +0.108 | 159.4 |
+
