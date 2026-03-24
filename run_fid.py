@@ -63,14 +63,28 @@ def compute_fid(features_real, features_fake):
     sigma_fake = np.cov(features_fake, rowvar=False)
 
     diff = mu_real - mu_fake
-    # Matrix sqrt via eigendecomposition
-    covmean_sq = sigma_real @ sigma_fake
-    eigvals, eigvecs = np.linalg.eigh(covmean_sq)
-    eigvals = np.maximum(eigvals, 0)  # numerical stability
-    covmean = eigvecs @ np.diag(np.sqrt(eigvals)) @ eigvecs.T
+
+    # FID = ||mu_1 - mu_2||^2 + Tr(sigma_1 + sigma_2 - 2*(sigma_1 @ sigma_2)^{1/2})
+    # Use scipy for proper matrix sqrt
+    try:
+        from scipy.linalg import sqrtm
+        covmean, _ = sqrtm(sigma_real @ sigma_fake, disp=False)
+        # sqrtm can return complex — take real part
+        if np.iscomplexobj(covmean):
+            covmean = covmean.real
+    except ImportError:
+        # Fallback: eigendecomposition of sigma_real^{1/2} @ sigma_fake @ sigma_real^{1/2}
+        # This is symmetric, so eigh works
+        eigvals_r, eigvecs_r = np.linalg.eigh(sigma_real)
+        eigvals_r = np.maximum(eigvals_r, 0)
+        sqrt_sigma_real = eigvecs_r @ np.diag(np.sqrt(eigvals_r)) @ eigvecs_r.T
+        product = sqrt_sigma_real @ sigma_fake @ sqrt_sigma_real
+        eigvals, eigvecs = np.linalg.eigh(product)
+        eigvals = np.maximum(eigvals, 0)
+        covmean = eigvecs @ np.diag(np.sqrt(eigvals)) @ eigvecs.T
 
     fid = diff @ diff + np.trace(sigma_real + sigma_fake - 2 * covmean)
-    return float(fid)
+    return max(float(fid), 0.0)  # FID is non-negative
 
 
 def main():
