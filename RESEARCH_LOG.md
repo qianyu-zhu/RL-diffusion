@@ -543,3 +543,50 @@ This is a testable, quantitative prediction: α should equal the mean singular v
 - **10868840** (lasd-s7): Re-run Stage 7 with PCA fix
 - **10868841** (lasd-fk): Re-run FK baseline with channel fix
 
+
+### Jacobian Measurement Results — Theory Revision Required
+
+**Measured per-layer Jacobian amplification (NOT attenuation):**
+
+| Source | L+5 ratio | Per-layer α |
+|--------|-----------|-------------|
+| L0→L5  | 6.20      | 1.440       |
+| L5→L10 | 1.23      | 1.042       |
+| L10→L15| 1.50      | 1.084       |
+| L15→L20| 1.95      | 1.143       |
+| L20→L25| inf       | inf         |
+
+**All measured α > 1. Perturbations AMPLIFY through layers.**
+
+The fitted α=0.773 in the accumulation equation is NOT a Jacobian attenuation factor. The real mechanism:
+
+1. Perturbations amplify (J > 1) through transformer blocks
+2. Norm clipping (5×) bounds the effective perturbation magnitude
+3. Temporal stability S(ℓ) determines how much concept signal survives after amplification + clipping
+4. The accumulation equation works because S(ℓ) × clip_function ≈ S(ℓ) × α^ℓ phenomenologically
+
+**Revised Theory: Stability-Gated Accumulation**
+
+The correct interpretation: early layers contribute more NOT because perturbations decay (they amplify), but because:
+- High stability at early layers (S=0.86) means the concept direction is preserved through amplification
+- Norm clipping then rescales the amplified perturbation back to a reasonable magnitude
+- The net effect is controlled steering in the concept direction
+- Late layers have low stability (S=0.40), so even though amplification is lower (fewer remaining layers), the concept direction is lost
+
+This explains norm_clip=5.0 being optimal, no_clip being worse, and Wang et al.'s norm_scale collapsing diversity.
+
+### Class Steering Results
+
+| Configuration | Target Rate | Notes |
+|---------------|-------------|-------|
+| →panda all-layer eps=-2.0 | +0.900 lift | Strong! |
+| →daisy all-layer eps=-0.5 | +0.900 lift | Strong! |
+| →daisy→balloon eps=-2.0 | 71.4% | Cross-class works |
+| →dog→cat eps=-1.0 | 28.6% | Above 10% chance |
+
+Class steering WORKS in DiT-XL/2, but classifier baseline is only 63% (10 classes), so results are noisy.
+
+### Running
+
+- **10874873** (lasd-fix): Theory fix experiments (orthogonality, 25 combos, contrast, CIs)
+
