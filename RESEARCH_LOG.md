@@ -878,3 +878,15 @@ Total commits this session: 30+
 Total experiments: 890+
 Total GPU hours: ~8h
 
+
+### Bidirectional Steering (CLIP)
+
+| Concept | Increase | Decrease |
+|---------|----------|----------|
+| Animal | +0.132 | -0.029 |
+| Natural | +0.130 | +0.059 |
+| Brightness | -0.037 | -0.158 |
+| Warmth | +0.013 | -0.025 |
+
+Animal is clearly bidirectional. CLIP brightness is asymmetric (detects dimming but not brightening). Paper figures complete: teaser, Pareto, accumulation, methods, Wang.
+
