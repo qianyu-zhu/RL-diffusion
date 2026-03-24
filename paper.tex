@@ -375,13 +375,12 @@ Wang: MD + norm-scale, L0 & +0.680 & $-0.567$ & 286.6 & 0.08 \\
 
 Figure~\ref{fig:pareto} shows the concept lift vs.\ FID tradeoff at varying $\varepsilon$.
 
-% Placeholder for figure
-% \begin{figure}[t]
-% \centering
-% \includegraphics[width=\linewidth]{figures/pareto.pdf}
-% \caption{Pareto frontier: concept lift vs.\ FID. Sweet spot at $\varepsilon = 0.3$--$0.5$ for statistical concepts, $\varepsilon = 2$--$5$ for semantic concepts.}
-% \label{fig:pareto}
-% \end{figure}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/pareto_frontier.pdf}
+\caption{Pareto frontier: concept lift vs.\ FID at varying $\varepsilon$. \textbf{Left:} Brightness (pixel lift) saturates at $\varepsilon \geq 0.5$ while FID grows exponentially. \textbf{Center:} Animal (CLIP lift) requires larger $\varepsilon$ but incurs steep FID cost. \textbf{Right:} Natural (CLIP lift) shows similar tradeoff. Sweet spot: $\varepsilon = 0.3$--$0.5$ for statistical, $\varepsilon = 2$--$5$ for semantic concepts.}
+\label{fig:pareto}
+\end{figure}
 
 \subsection{Accumulation Validation}
 
@@ -448,28 +447,41 @@ Natural (MD, all-layer) & $-2.0$ & $+0.031$ & 69.0 \\
 \section{Discussion}
 \label{sec:discussion}
 
-\paragraph{Limitations.}
-Our experiments focus on DiT-XL/2-256 with ImageNet class-conditional generation.
-The FID degradation at high $\varepsilon$ ($>100$ for semantic concepts) suggests a quality-concept tradeoff that requires further investigation.
-CLIP-based brightness evaluation contradicts pixel-based metrics, indicating that mean pixel value is not a perceptually meaningful brightness measure.
+\paragraph{Statistical vs.\ semantic concepts require different $\varepsilon$ ranges.}
+Statistical concepts (brightness, warmth) that correspond to low-order pixel statistics steer effectively at small $\varepsilon$ (0.1--0.5) with minimal FID degradation ($<70$).
+Semantic concepts (animal, natural) require $5$--$10\times$ larger $\varepsilon$ and incur correspondingly higher FID ($145$--$280$).
+This follows from the probe analysis: statistical concepts are decodable at $>95\%$ accuracy from the very first layer, meaning small perturbations suffice.
+Semantic concepts, while linearly decodable at similar accuracy, are encoded in directions that require larger displacement to cross perceptual thresholds.
+
+\paragraph{A methodological warning: evaluating semantic steering.}
+During our investigation, we discovered that class-based concept labelers (e.g., labeling ``animal'' by class ID rather than image content) produce trivially zero lift regardless of steering effectiveness, because steering cannot change the class label input.
+We recommend CLIP zero-shot classification or trained image classifiers for evaluating semantic steering in class-conditional models.
+Pixel difference analysis confirmed that semantic steering changes images as much as statistical steering ($\Delta = 0.36$ mean absolute pixel difference for both), but this change is invisible to class-ID-based evaluation.
 
 \paragraph{Why does RFM fail in DiTs?}
 The RFM/AGOP direction captures maximum kernel gradient variation in a Mahalanobis-reweighted feature space.
-In DiT's adaLN-conditioned residual stream, this space does not align with the concept centroid displacement direction.
-In U-Nets, where conditioning enters through cross-attention and skip connections, the geometry may be more favorable for AGOP alignment.
-A systematic study across architectures is needed.
+In DiT's adaLN-conditioned residual stream, this direction is orthogonal to the mean-difference direction ($\cos \approx 0$ at all 28 layers), meaning it optimizes for discriminability in a subspace irrelevant to causal steering.
+In U-Nets, where \citet{wang2026general} report success, the residual stream geometry may better align AGOP with centroid directions.
+This highlights an important lesson: methods validated on one architecture should not be assumed to transfer.
+
+\paragraph{Limitations.}
+Our experiments focus primarily on DiT-XL/2-256 with ImageNet class-conditional generation, with supplementary U-Net results.
+The quality--concept tradeoff for semantic concepts (FID $>145$ at effective $\varepsilon$) limits practical applicability for high-fidelity generation.
+Our temporal stability explanation, while empirically strong ($r = 0.95$ on 25 configurations), is a semi-empirical model rather than a rigorous derivation; the $1/(\ell+1)$ weighting emerges from the data but awaits a first-principles proof connecting Jacobian amplification, norm clipping, and concept direction preservation.
 
 \paragraph{Broader impact.}
 Zero-cost activation steering enables controllable generation without retraining, reducing the computational cost of content control.
-However, the same mechanism could be used for harmful steering (e.g., generating unsafe content).
-The norm-clipping mechanism provides a natural defense: it bounds the magnitude of any perturbation, limiting the degree of controllable deviation from the base model's distribution.
+However, the same mechanism could be used for harmful steering.
+The norm-clipping mechanism provides a natural defense: it bounds any perturbation to $C \times$ the original activation norm, limiting deviation from the base model's distribution.
 
 % ==================================================================
 \section{Conclusion}
 
-We presented a stability-theoretic framework for understanding activation steering in Diffusion Transformers.
-The core insight is simple: mean-difference vectors succeed because they are temporally stable---consistent across denoising timesteps---while discriminative alternatives (RFM, logistic regression) are either orthogonal to the causal direction or too variable to accumulate coherently.
-The front-weighted accumulation formula ($r = 0.95$) provides a practical guide for layer selection, and our comparison with concurrent work reveals critical failure modes (diversity collapse from norm-scaling, RFM orthogonality in DiTs) that inform future method design.
+We presented a stability-theoretic framework for activation steering in Diffusion Transformers.
+The core insight is that mean-difference vectors succeed because they are temporally stable---consistent across denoising timesteps---while discriminative alternatives (RFM, logistic regression) are either orthogonal to the causal direction or too variable to accumulate coherently.
+The front-weighted accumulation formula ($r = 0.95$ on 25 held-out configurations) provides a practical guide for layer selection: the first 5 of 28 layers capture 80\% of the steering effect.
+Our comparison with concurrent work~\citep{wang2026general} reveals that their RFM directions are orthogonal to the causal direction in DiTs, and their norm-scaling formula collapses diversity to $<10\%$ of baseline.
+These findings establish temporal stability as the primary criterion for steering vector quality in diffusion models, connecting the predictive-causal gap observed in LLMs~\citep{marks2024geometry} to the iterative denoising dynamics unique to diffusion.
 
 \bibliography{references}
 \bibliographystyle{plainnat}
