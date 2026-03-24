@@ -1,0 +1,393 @@
+% Appendix for: Stability-Guided Activation Steering in Diffusion Transformers
+% Auto-generated from results.tsv (890 experiments)
+
+\appendix
+
+\section{Complete Experimental Results}
+\label{app:full-results}
+
+This appendix presents the full experimental data underlying the main paper.
+All results are drawn from 890 logged experiments across 37 experimental stages,
+spanning probing, steering, layer selection, scheduling, composition, two-stage methods,
+quality evaluation, Feynman--Kac comparison, adaptive steering, orthogonality analysis,
+CLIP evaluation, FID evaluation, Pareto analysis, and Wang et al.\ comparison.
+
+%% ============================================================
+%% TABLE A1: Summary of all experiment stages
+%% ============================================================
+\begin{table}[h]
+\centering
+\caption{Summary of all experiment stages.}
+\label{tab:a1-stages}
+\small
+\begin{tabular}{llrl}
+\toprule
+\textbf{Stage} & \textbf{Description} & \textbf{\# Exps} & \textbf{Key Metrics} \\
+\midrule
+S1 & Probing (DiT) & 2 & probe\_acc \\
+S1-SD & Probing (SD 1.5) & 2 & probe\_acc \\
+S2 & Single-layer steering (DiT) & 33 & lift \\
+S2-SD & Single-layer steering (SD 1.5) & 31 & lift \\
+S2-SDv2 & Extended SD 1.5 sweep & 70 & lift \\
+S3 & Layer selection \& scheduling & 27 & lift \\
+S4 & Composition \& cross-class & 16 & lift \\
+S5 & Full 500-sample evaluation & 80 & lift \\
+S6 & Two-stage \& Wang norm scaling & 26 & lift \\
+S7-Q & Quality evaluation & 20 & bright\_shift, diversity\_ratio \\
+S7-W & Warmth concept & 22 & lift, probe\_acc \\
+S7-C & Contrast concept & 12 & lift \\
+S7-T & Texture concept & 12 & lift \\
+S7-SEM & Semantic steering attempts & 72 & lift \\
+S8-FK & Feynman--Kac comparison & 9 & lift \\
+S9-A & Adaptive steering & 9 & lift \\
+S9-MB & Multi-basis steering & 8 & lift \\
+S9-LA & Layer-adaptive profiles & 8 & lift \\
+S10-CLS & Class-conditional steering & 39 & class\_lift, cross\_class \\
+\midrule
+GAP & Gap analysis (28 layers) & 48 & lift \\
+THEORY & Jacobian attenuation & 6 & jacobian\_alpha \\
+METHOD & Method comparison & 30 & stability, cosine sim \\
+CLIP & CLIP alignment (v1) & 6 & clip\_lift \\
+CLIPv2 & CLIP alignment (v2) & 15 & clip\_animal, clip\_natural \\
+FID & Fr\'{e}chet Inception Distance & 10 & fid \\
+PARETO & Pareto front (3 concepts) & 41 & fid, pixel\_lift, clip\_lift \\
+PARETO-CI & Bootstrap confidence intervals & 3 & clip\_mean \\
+WANG & Wang et al.\ comparison & 32 & pixel\_lift, clip\_lift, fid, div \\
+\midrule
+FIX-ORTH & Orthogonality analysis & 130 & proj\_mag, orthogonality, act\_proj \\
+FIX-ADALN & AdaLN survival analysis & 26 & survival\_rho \\
+FIX-COMBO & Layer combination sweep & 25 & lift \\
+FIX-MODEL & Model comparison correlations & 4 & correlation \\
+FIX-CONTRAST & Contrast probing & 8 & probe\_acc, cos \\
+FIX-CI & Bootstrap CI for main result & 2 & mean\_lift, ci\_width \\
+FIX-SEM & Semantic pixel analysis & 5 & pixel\_diff, heuristic\_lift \\
+FIX-CFG & CFG ablation & 1 & bright\_lift \\
+\midrule
+\textbf{Total} & & \textbf{890} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+%% TABLE A2: Best configurations per concept
+%% ============================================================
+\begin{table}[h]
+\centering
+\caption{Best steering configurations per concept (DiT-XL/2, ImageNet 256$\times$256). Lift denotes the shift in the target metric relative to unsteered baseline. All values from \texttt{results.tsv}.}
+\label{tab:a2-best-per-concept}
+\small
+\begin{tabular}{llllr}
+\toprule
+\textbf{Concept} & \textbf{Method} & \textbf{Layers} & $\boldsymbol{\varepsilon}$ & \textbf{Best Lift} \\
+\midrule
+\multicolumn{5}{l}{\emph{Visual / Low-level concepts (effective)}} \\
+Brightness & mean\_diff & all-layer & $-0.5$ & $+0.542$ \\
+Brightness & mean\_diff & first5 & $-0.5$ & $+0.394$ \\
+Brightness & mean\_diff & layer0 & $-0.5$ & $+0.176$ \\
+Colorfulness & mean\_diff & all-layer & $-0.5$ & $+0.306$ \\
+Colorfulness & pca & all-layer & $+0.5$ & $+0.362$ \\
+Warmth & mean\_diff & all-layer & $-0.5$ & $+0.230$ \\
+Texture & mean\_diff & all-layer & $-0.5$ & $+0.110$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Contrast (limited steerability)}} \\
+Contrast & mean\_diff & all-layer & $-0.5$ & $-0.010$ \\
+Contrast & pca & all-layer & $-0.3$ & $-0.060$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Semantic concepts (not steerable)}} \\
+Animal & mean\_diff & any config & any & $0.000$ \\
+Natural & mean\_diff & any config & any & $0.000$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Class-conditional (S10-CLS, partial success)}} \\
+giant\_panda & class steer & all-layer & $-2.0$ & $+0.900$ \\
+daisy & class steer & all-layer & $-0.5$ & $+0.900$ \\
+tabby\_cat & class steer & all-layer & $-0.5$ & $+0.400$ \\
+golden\_retriever & class steer & all-layer & $-1.0$ & $+0.400$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Two-stage / norm-scaling enhancements}} \\
+Brightness (norm\_scale) & two-stage & layer0 & $-0.5$ & $+0.615$ \\
+Brightness (two-stage MD) & two-stage & all-layer & $-0.5$ & $+0.590$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+%% TABLE A3: Full Pareto data for each concept
+%% ============================================================
+\begin{table}[h]
+\centering
+\caption{Pareto front: steering strength vs.\ image quality for brightness, animal, and natural concepts. FID computed against 50k ImageNet validation set. All steering uses all-layer mean\_diff on DiT-XL/2.}
+\label{tab:a3-pareto}
+\small
+\begin{tabular}{llrrr}
+\toprule
+\textbf{Concept} & $\boldsymbol{\varepsilon}$ & \textbf{FID} & \textbf{Pixel Lift} & \textbf{CLIP Lift} \\
+\midrule
+\multicolumn{5}{l}{\emph{Brightness}} \\
+ & $-0.05$ & 61.481 & $+0.116$ & $+0.001$ \\
+ & $-0.1$ & 61.665 & $+0.174$ & $-0.002$ \\
+ & $-0.2$ & 60.950 & $+0.362$ & $-0.002$ \\
+ & $-0.3$ & 62.594 & $+0.460$ & $-0.011$ \\
+ & $-0.5$ & 66.291 & $+0.582$ & $-0.040$ \\
+ & $-0.7$ & 76.330 & $+0.604$ & $-0.085$ \\
+ & $-1.0$ & 102.727 & $+0.638$ & $-0.196$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Animal (CLIP-based)}} \\
+ & $+1.0$ & 63.946 & --- & $+0.017$ \\
+ & $+2.0$ & 69.208 & --- & $+0.044$ \\
+ & $+5.0$ & 144.809 & --- & $+0.141$ \\
+ & $+7.0$ & 216.267 & --- & $+0.209$ \\
+ & $+10.0$ & 279.435 & --- & $+0.265$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Natural (CLIP-based)}} \\
+ & $-1.0$ & 64.103 & --- & $+0.008$ \\
+ & $-2.0$ & 68.985 & --- & $+0.031$ \\
+ & $-5.0$ & 159.423 & --- & $+0.108$ \\
+ & $-7.0$ & 250.794 & --- & $+0.171$ \\
+ & $-10.0$ & 328.884 & --- & $+0.186$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+%% TABLE A4: Method comparison (temporal stability + alignment)
+%% ============================================================
+\begin{table}[h]
+\centering
+\caption{Temporal stability and vector alignment across extraction methods and layers. Stability $\in [0,1]$ measures cosine consistency of the concept direction across denoising timesteps ($t=0\ldots999$). Cosine values measure alignment between mean\_diff and the alternative method. All values for brightness on DiT-XL/2.}
+\label{tab:a4-method-comparison}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Layer} & \multicolumn{3}{c}{\textbf{Temporal Stability}} & \textbf{cos(MD, LR)} \\
+\cmidrule(lr){2-4}
+ & \textbf{mean\_diff} & \textbf{PCA} & \textbf{LogReg} & \\
+\midrule
+0 & 0.859 & 0.591 & 0.503 & 0.422 \\
+5 & 0.757 & 0.385 & 0.423 & 0.606 \\
+10 & 0.676 & 0.817 & 0.470 & 0.622 \\
+15 & 0.805 & 0.893 & 0.479 & 0.604 \\
+20 & 0.678 & 0.802 & 0.474 & 0.543 \\
+25 & 0.436 & 0.360 & 0.376 & 0.489 \\
+\midrule
+\textbf{Mean} & \textbf{0.702} & \textbf{0.641} & \textbf{0.454} & \textbf{0.548} \\
+\bottomrule
+\end{tabular}
+\vspace{4pt}
+
+\begin{tabular}{lrr}
+\toprule
+\textbf{Layer} & \textbf{cos(MD, RFM)} & \textbf{Interpretation} \\
+\midrule
+0 & 0.001 & Near-orthogonal \\
+5 & 0.001 & Near-orthogonal \\
+10 & 0.008 & Near-orthogonal \\
+15 & $-0.002$ & Near-orthogonal \\
+20 & 0.032 & Near-orthogonal \\
+25 & 0.011 & Near-orthogonal \\
+\midrule
+\textbf{Mean} & \textbf{0.009} & \textbf{Orthogonal} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+%% TABLE A5: Wang et al. comparison
+%% ============================================================
+\begin{table}[h]
+\centering
+\caption{Comparison with Wang et al.\ (2026) norm-scaling method.
+All experiments use brightness on DiT-XL/2, 500 samples.
+LASD = our method (Latent Activation Steering in DiTs).
+Pixel lift = mean brightness shift; CLIP lift = CLIP-measured alignment change;
+Div.\ ratio = diversity relative to unsteered baseline (1.0 = no change).}
+\label{tab:a5-wang}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Configuration} & \textbf{Pixel Lift} & \textbf{CLIP Lift} & \textbf{FID} & \textbf{Div.\ Ratio} \\
+\midrule
+LASD all-layer ($\varepsilon{=}{-}0.5$) & $+0.640$ & $-0.032$ & 92.386 & 0.925 \\
+LASD first5 ($\varepsilon{=}{-}0.5$) & $+0.420$ & $+0.013$ & 83.147 & 1.053 \\
+LASD all-layer ($\varepsilon{=}{-}0.1$) & $+0.235$ & $-0.008$ & 88.245 & 1.047 \\
+LASD all-layer + norm\_scale & $-0.320$ & $-0.290$ & 341.217 & 0.000 \\
+\midrule
+Wang L25 RFM & $+0.050$ & $+0.002$ & 82.802 & 1.005 \\
+Wang L25 RFM + CLIP & $+0.065$ & $-0.009$ & 82.760 & 1.020 \\
+Wang L25 MD & $+0.680$ & $-0.420$ & 269.031 & 0.200 \\
+Wang L0 MD & $+0.680$ & $-0.567$ & 286.608 & 0.075 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+%% TABLE A6: Layer combination results (25 combos)
+%% ============================================================
+\begin{table}[h]
+\centering
+\caption{Layer combination sweep (25 configurations). All use brightness mean\_diff with $\varepsilon = -0.5$ on DiT-XL/2. Combinations sorted by lift.}
+\label{tab:a6-layer-combos}
+\small
+\begin{tabular}{llrr}
+\toprule
+\textbf{Combination Name} & \textbf{Layers} & \textbf{\# Layers} & \textbf{Lift} \\
+\midrule
+first8 & 0--7 & 8 & $+0.520$ \\
+first3 & 0--2 & 3 & $+0.410$ \\
+every3rd & 0,3,6,\ldots & 10 & $+0.360$ \\
+pairs & 0--1,6--7,12--13 & 6 & $+0.360$ \\
+edges & 0--2,25--27 & 6 & $+0.350$ \\
+even-first-half & 0,2,4,\ldots,14 & 8 & $+0.320$ \\
+even-first10 & 0,2,4,6,8 & 5 & $+0.300$ \\
+every7th & 0,7,14,21,27 & 5 & $+0.300$ \\
+L0-14-27 & 0,14,27 & 3 & $+0.270$ \\
+every5th & 0,5,10,15,20,25 & 6 & $+0.270$ \\
+every4th-offset1 & 1,5,9,\ldots & 7 & $+0.270$ \\
+every4th & 0,4,8,\ldots & 7 & $+0.240$ \\
+odd-first10 & 1,3,5,7,9 & 5 & $+0.220$ \\
+L0-5-10 & 0,5,10 & 3 & $+0.200$ \\
+L0-10-20 & 0,10,20 & 3 & $+0.200$ \\
+first-last & 0,27 & 2 & $+0.200$ \\
+offset5th & 2,7,12,17,22 & 5 & $+0.170$ \\
+L0-only & 0 & 1 & $+0.150$ \\
+early-mid & 3--8 & 6 & $+0.120$ \\
+even-mid & 10,12,14,16,18 & 5 & $+0.120$ \\
+offset5th-v2 & 3,8,13,18,23 & 5 & $+0.120$ \\
+last3 & 25--27 & 3 & $+0.090$ \\
+L5-15-25 & 5,15,25 & 3 & $+0.050$ \\
+even-late & 20,22,24,26 & 4 & $+0.050$ \\
+mid3 & 13--15 & 3 & $+0.050$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+%% TABLE A7: Additional findings
+%% ============================================================
+\begin{table}[h]
+\centering
+\caption{Additional experimental findings.}
+\label{tab:a7-additional}
+\small
+\begin{tabular}{lrl}
+\toprule
+\textbf{Finding} & \textbf{Value} & \textbf{Source} \\
+\midrule
+\multicolumn{3}{l}{\emph{Probing accuracy (DiT-XL/2)}} \\
+Brightness probe (best: layer 0) & 0.990 & S1 \\
+Colorfulness probe (best: layer 2) & 0.940 & S1 \\
+Warmth probe (best: layer 0) & 0.960 & S7-W \\
+Contrast probe (best: layer 5) & 0.815 & FIX-CONTRAST \\
+\midrule
+\multicolumn{3}{l}{\emph{Probing accuracy (Stable Diffusion 1.5)}} \\
+Brightness probe (best: down\_0) & 0.900 & S1-SD \\
+Colorfulness probe (best: down\_0) & 0.950 & S1-SD \\
+\midrule
+\multicolumn{3}{l}{\emph{Bootstrap confidence interval (all-layer MD, $\varepsilon{=}{-}0.5$)}} \\
+Mean lift & 0.575 & FIX-CI \\
+95\% CI width & 0.173 & FIX-CI \\
+\midrule
+\multicolumn{3}{l}{\emph{Quality: diversity ratio under steering}} \\
+All-layer MD $\varepsilon{=}{-}0.5$ & 0.841--0.880 & S7-Q \\
+Layer0 MD $\varepsilon{=}{-}0.5$ & 0.980--1.022 & S7-Q \\
+First5 MD $\varepsilon{=}{-}0.5$ & 0.971--0.976 & S7-Q \\
+Layer0 norm\_scale $\varepsilon{=}{-}0.1$ & 0.098 & S7-Q \\
+\midrule
+\multicolumn{3}{l}{\emph{Feynman--Kac comparison (FK steering baseline)}} \\
+FK $k{=}2$ & $-0.010$ lift & S8-FK \\
+FK $k{=}4$ & $+0.030$ lift & S8-FK \\
+FK $k{=}8$ & $+0.050$ lift & S8-FK \\
+LASD all-layer & $+0.560$ lift & S8-FK \\
+LASD layer0 norm\_scale & $+0.620$ lift & S8-FK \\
+\midrule
+\multicolumn{3}{l}{\emph{Layer-adaptive profiles (S9-LA)}} \\
+exponential\_decay (28 layers) & $+0.560$ lift & S9-LA \\
+front\_heavy (14 layers) & $+0.535$ lift & S9-LA \\
+uniform (28 layers) & $+0.530$ lift & S9-LA \\
+U\_shape (27 layers) & $+0.470$ lift & S9-LA \\
+first10\_only (10 layers) & $+0.460$ lift & S9-LA \\
+odd\_layers (14 layers) & $+0.345$ lift & S9-LA \\
+V\_shape (27 layers) & $+0.225$ lift & S9-LA \\
+back\_heavy (14 layers) & $+0.065$ lift & S9-LA \\
+\midrule
+\multicolumn{3}{l}{\emph{Multi-basis steering (S9-MB)}} \\
+MD-PCA-oppose [$-0.5, +0.5, 0$] & $+0.580$ lift & S9-MB \\
+MD-only [$-0.5, 0, 0$] & $+0.525$ lift & S9-MB \\
+MD+LR [$-0.3, 0, -0.2$] & $+0.520$ lift & S9-MB \\
+\midrule
+\multicolumn{3}{l}{\emph{Orthogonality (mean across layers 0, 10, 20)}} \\
+Brightness MD orthogonality & $0.810 \pm 0.060$ & FIX-ORTH \\
+Warmth MD orthogonality & $0.767 \pm 0.076$ & FIX-ORTH \\
+Colorfulness MD orthogonality & $0.799 \pm 0.045$ & FIX-ORTH \\
+Animal MD orthogonality & $0.730 \pm 0.145$ & FIX-ORTH \\
+Natural MD orthogonality & $0.729 \pm 0.144$ & FIX-ORTH \\
+\midrule
+\multicolumn{3}{l}{\emph{AdaLN survival $\rho$ (mean across layers)}} \\
+Brightness & 0.013 & FIX-ADALN \\
+Warmth & 0.010 & FIX-ADALN \\
+Colorfulness & 0.014 & FIX-ADALN \\
+\midrule
+\multicolumn{3}{l}{\emph{Model comparison correlations}} \\
+Front-weighted model ($r$) & 0.949 & FIX-MODEL \\
+Stability-alpha model ($r$) & 0.933 & FIX-MODEL \\
+Pure stability model ($r$) & 0.617 & FIX-MODEL \\
+Layer count model ($r$) & 0.538 & FIX-MODEL \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ============================================================
+%% Summary Statistics (inline)
+%% ============================================================
+\subsection{Summary Statistics}
+\label{app:summary-stats}
+
+\noindent\textbf{Scale.}
+The full experimental log contains \textbf{890 experiments} across \textbf{37 distinct stages}.
+
+\noindent\textbf{Concepts tested.}
+We evaluated steering on 9 concepts:
+\emph{brightness} (primary),
+\emph{colorfulness},
+\emph{warmth},
+\emph{texture},
+\emph{contrast},
+\emph{animal} (semantic),
+\emph{natural} (semantic),
+plus 5 ImageNet classes (golden\_retriever, tabby\_cat, giant\_panda, daisy, bubble).
+
+\noindent\textbf{Extraction methods.}
+Four vector extraction methods were compared:
+mean difference (MD),
+PCA,
+logistic regression (LogReg),
+and Recursive Feature Machines (RFM).
+
+\noindent\textbf{Layer configurations.}
+We tested steering at individual layers 0--27 (28 layers),
+plus 25 named layer combinations (Table~\ref{tab:a6-layer-combos}),
+and 8 layer-adaptive profiles.
+
+\noindent\textbf{Top 5 configurations by lift (DiT-XL/2).}
+\begin{enumerate}[nosep]
+\item SD15v2 brightness all\_blocks $\varepsilon{=}{-}5$, frac$=$0.3: lift $= +0.790$ (S2-SDv2; Stable Diffusion 1.5)
+\item SD15v2 brightness down\_all $\varepsilon{=}{-}5$, frac$=$0.3: lift $= +0.720$ (S2-SDv2; Stable Diffusion 1.5)
+\item SD15v2 brightness down\_0 $\varepsilon{=}{-}5$, frac$=$0.3: lift $= +0.660$ (S2-SDv2; Stable Diffusion 1.5)
+\item LASD layer0 norm\_scale $\varepsilon{=}{-}0.1$: lift $= +0.620$ (S8-FK; DiT-XL/2)
+\item Two-stage layer0 norm\_scale $\varepsilon{=}{-}0.5$: lift $= +0.615$ (S6; DiT-XL/2)
+\end{enumerate}
+
+\noindent\textbf{Top 5 configurations by FID (lower is better, DiT-XL/2).}
+\begin{enumerate}[nosep]
+\item Layer0 MD $\varepsilon{=}{-}0.1$: FID $= 60.654$
+\item Brightness $\varepsilon{=}{-}0.2$: FID $= 60.950$ (Pareto)
+\item Brightness $\varepsilon{=}{-}0.05$: FID $= 61.481$ (Pareto)
+\item Brightness $\varepsilon{=}{-}0.1$: FID $= 61.665$ (Pareto)
+\item First5 MD $\varepsilon{=}{-}0.5$: FID $= 61.822$
+\end{enumerate}
+
+\noindent\textbf{Key negative results.}
+Semantic concepts (animal, natural) showed zero lift across all 72 configurations tested in S7-SEM,
+including extreme $\varepsilon$ values ($\pm 20$) and no-clip conditions.
+Contrast showed consistently negative lift (best: $-0.010$).
+Norm-scaling (Wang et al.) collapsed diversity to 0.000 on all-layer configurations.
+RFM vectors were orthogonal to mean-difference vectors ($\cos < 0.04$ at every layer).
