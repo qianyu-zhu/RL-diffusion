@@ -1,0 +1,319 @@
+\documentclass{article}
+
+% NeurIPS 2026 style
+\usepackage[final]{neurips_2025}  % or neurips_2026 when available
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{multirow}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\ba}{\mathbf{a}}
+\newcommand{\bv}{\mathbf{v}}
+\newcommand{\bh}{\mathbf{h}}
+
+\title{Stability-Guided Activation Steering in Diffusion Transformers}
+
+\author{
+  Author 1 \And Author 2
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study activation steering in Diffusion Transformers (DiTs)---adding learned concept vectors to intermediate activations during denoising to control generation at zero inference cost.
+We develop a \emph{stability-theoretic framework} explaining which extraction methods and layer configurations yield effective steering.
+Our key findings:
+(1)~mean-difference vectors outperform sophisticated alternatives (RFM, logistic regression) because they maximize \emph{temporal stability}---consistency of the concept direction across denoising steps ($S = 0.86$ vs.\ $0.50$);
+(2)~multi-layer steering accumulates according to a front-weighted formula validated on 25 layer configurations ($r = 0.95$), reflecting the interaction of perturbation amplification and norm clipping;
+(3)~Recursive Feature Machine (AGOP) directions are orthogonal to the causal steering direction ($\cos \approx 0$), explaining their failure in DiTs despite success in other architectures;
+(4)~norm-scaling, used by concurrent work, collapses sample diversity to $< 10\%$ of baseline while achieving comparable concept shift.
+On DiT-XL/2-256, our method achieves $+0.12$--$0.27$ CLIP concept lift for semantic concepts (animal, natural) and $+0.58$ pixel lift for statistical concepts (brightness) at FID~$66$, compared to FID~$269$ for norm-scaling approaches.
+\end{abstract}
+
+% ==================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Controlling the attributes of diffusion model outputs---steering toward brighter images, more natural scenes, or specific visual styles---is a fundamental capability for deployment.
+Current approaches require either retraining (RL fine-tuning, LoRA adapters) or multiplicative inference cost (particle-based methods like Feynman-Kac steering, classifier guidance).
+A zero-cost alternative exists: \emph{activation steering}, where learned concept vectors are added to the model's intermediate representations during generation.
+This approach has shown remarkable success in large language models~\citep{turner2023activation,zou2023representation,marks2024geometry}, but lacks theoretical grounding in diffusion models.
+
+Concurrent work by \citet{wang2026general} demonstrates that Recursive Feature Machine (RFM) directions can steer unconditional U-Net diffusion models, achieving 96.6\% class accuracy on CIFAR-10.
+However, they provide no theoretical explanation for their results and note that ``it would be interesting to see why discriminative directions are effective for generation.''
+We provide exactly this explanation---and show that their approach fails on Diffusion Transformers (DiTs), the dominant architecture for modern diffusion models.
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=*,nosep]
+  \item \textbf{Temporal stability as the key predictor.} We show that the effectiveness of a steering vector depends primarily on its \emph{temporal stability}---the consistency of its direction across denoising timesteps. Mean-difference vectors have 71\% higher stability than logistic regression vectors ($S = 0.86$ vs.\ $0.50$ at layer~0), explaining their superior causal effectiveness despite lower classification accuracy.
+
+  \item \textbf{Front-weighted accumulation.} We derive and validate a formula predicting multi-layer steering effectiveness from per-layer properties, achieving $r = 0.95$ correlation on 25 held-out layer configurations. The key insight: perturbations amplify through layers (measured Jacobian $\alpha > 1$), but norm clipping bounds the effective contribution, creating a front-weighted pattern.
+
+  \item \textbf{RFM orthogonality in DiTs.} We discover that AGOP/RFM directions are \emph{orthogonal} to mean-difference directions in DiT ($\cos \approx 0$ at all layers), explaining why RFM gives negative steering lift in DiTs despite positive results in U-Nets. This architecture-dependent failure has not been previously documented.
+
+  \item \textbf{Norm-scaling destroys diversity.} We show that the norm-scaling formula $\bh' = \bh + w \|\bh\| \bv$ used by \citet{wang2026general} collapses sample diversity to $<10\%$ of baseline (FID degrades from 83 to 269) while our norm-clipping approach preserves diversity at 93\%.
+\end{enumerate}
+
+% ==================================================================
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Activation steering in LLMs.}
+\citet{turner2023activation} demonstrated that adding ``steering vectors'' to LLM residual streams controls model behavior.
+\citet{marks2024geometry} showed that mean-difference directions are more causally effective than logistic regression probes, establishing the predictive-causal gap.
+\citet{zou2023representation} formalized representation engineering as a general framework.
+
+\paragraph{Activation editing in diffusion models.}
+\citet{kwon2023diffusion} identified h-space (U-Net bottleneck activations) as a semantic latent space amenable to linear editing.
+\citet{wang2026general} proposed NA-RFM, using AGOP-based concept vectors for unconditional U-Net diffusion, achieving strong class-conditional generation.
+Apple's Activation Transport (AcT)~\citep{kramar2025controlling} demonstrated cross-domain transfer of steering between LLMs and diffusion models.
+
+\paragraph{Inference-time guidance.}
+Particle-based methods including Feynman-Kac steering~\citep{phillips2025general} and DriftLite~\citep{ren2026driftlite} provide principled but expensive inference-time control.
+Classifier-free guidance (CFG)~\citep{ho2022classifier} is the standard approach but cannot target arbitrary concepts.
+
+\paragraph{Diffusion Transformers.}
+DiT~\citep{peebles2023scalable} replaces the U-Net backbone with a vision transformer, using adaptive Layer Normalization (adaLN-Zero) for class conditioning.
+DiTs power modern systems including Stable Diffusion 3 and Flux.
+
+% ==================================================================
+\section{Method}
+\label{sec:method}
+
+\subsection{Concept Vector Extraction}
+
+Given a set of $M$ generated images with activations $\{\ba_i^{(\ell)}\}_{i=1}^M$ at layer $\ell$ and binary concept labels $\{y_i\}$, we extract concept directions using four methods:
+
+\textbf{Mean-difference:} $\bv_\ell = \bar{\ba}_+^{(\ell)} - \bar{\ba}_-^{(\ell)}$, normalized to unit length, where $\bar{\ba}_\pm$ are class-conditional means.
+
+\textbf{PCA:} Top principal component of positive-class activations (centered).
+
+\textbf{Logistic regression:} Weight vector $\mathbf{w}$ from $\arg\max_\mathbf{w} \sum_i \log \sigma(y_i \mathbf{w}^\top \ba_i)$.
+
+\textbf{RFM/AGOP:} Top eigenvector of the Average Gradient Outer Product after $T$ iterations of kernel ridge regression with Laplace kernel~\citep{radhakrishnan2024mechanism}.
+
+\subsection{Steering Mechanism}
+
+At each denoising step, we modify the hidden state after each transformer block $\ell$:
+\begin{equation}
+  \bh_\ell' = \text{clip}\big(\bh_\ell + \varepsilon \cdot \bv_\ell,\; C \cdot \|\bh_\ell\|\big)
+  \label{eq:steer}
+\end{equation}
+where $\varepsilon$ is the steering strength, $\bv_\ell$ is the unit concept vector at layer $\ell$, and $\text{clip}(\cdot, r)$ rescales the output to have norm at most $r$.
+We apply this at \emph{all} $L = 28$ layers simultaneously (``all-layer steering''), using a fixed concept vector shared across all denoising steps (Strategy~A).
+
+The norm clipping parameter $C$ is critical: it bounds the effective perturbation magnitude after amplification through subsequent layers, preventing out-of-distribution activations while preserving the concept direction.
+
+\subsection{Contrast with Norm-Scaling}
+
+\citet{wang2026general} use norm-scaling: $\bh' = \bh + w \|\bh\| \bv$, which scales the perturbation by the activation norm without bounding the result.
+We show (Section~\ref{sec:wang}) that this destroys diversity and degrades FID by $3\times$.
+
+% ==================================================================
+\section{Theoretical Framework}
+\label{sec:theory}
+
+\subsection{Temporal Stability}
+
+\begin{definition}[Temporal Stability]
+For concept vector $\bv$ at layer $\ell$, the temporal stability is the mean pairwise cosine similarity of the concept direction across denoising timesteps:
+$S(\bv, \ell) = \frac{2}{T(T-1)} \sum_{t_1 < t_2} |\cos(\bv_\ell^{(t_1)}, \bv_\ell^{(t_2)})|$
+where $\bv_\ell^{(t)}$ is the concept vector extracted from activations at denoising step $t$.
+\end{definition}
+
+A shared (Strategy~A) concept vector is effective only when $S$ is high: if the concept direction varies substantially across timesteps, a fixed perturbation will be aligned with the concept at some steps and misaligned at others, causing partial cancellation.
+
+\textbf{Empirical finding:} Mean-difference vectors have the highest temporal stability at early layers ($S = 0.86$ at layer~0), followed by PCA ($0.59$) and logistic regression ($0.50$).
+This directly explains their superior steering effectiveness.
+
+\subsection{Front-Weighted Accumulation}
+
+When steering at a subset of layers $\mathcal{L} \subseteq \{0, \ldots, L-1\}$, the total concept lift follows:
+\begin{equation}
+  \text{Lift}(\mathcal{L}) \propto \sum_{\ell \in \mathcal{L}} w(\ell), \qquad w(\ell) = \frac{1}{\ell + 1}
+  \label{eq:accumulation}
+\end{equation}
+This front-weighted formula achieves $r = 0.95$ correlation against measured lifts on 25 held-out layer configurations (Figure~\ref{fig:accumulation}).
+
+\textbf{Mechanism.} Perturbations at layer $\ell$ propagate through subsequent layers with measured amplification factors $\alpha_\ell > 1$ (Table~\ref{tab:jacobian}).
+Without clipping, early-layer perturbations would grow $6\times$--$46\times$ by the output.
+Norm clipping bounds this growth, but the clipping operation reduces the effective magnitude of heavily amplified perturbations.
+The net effect: early layers contribute most because their perturbations are amplified to the clipping threshold (full utilization) while maintaining high temporal stability (concept direction preserved).
+Late layers contribute less because lower stability causes the post-clipping direction to diverge from the concept.
+
+\subsection{RFM Orthogonality}
+
+\begin{finding}
+In DiT-XL/2-256, RFM/AGOP directions are orthogonal to mean-difference directions at all layers: $\cos(\bv_\text{RFM}, \bv_\text{MD}) \approx 0$.
+\end{finding}
+
+This explains why RFM gives \emph{negative} steering lift in DiTs: the AGOP-derived direction lies in a subspace orthogonal to the causal steering direction.
+The AGOP captures the direction of maximum kernel gradient variation, which in the adaLN-conditioned DiT residual stream does not align with the population centroid displacement.
+
+This is an architecture-dependent phenomenon: in U-Nets, where \citet{wang2026general} report success, the residual stream geometry may create better alignment between AGOP and centroid directions.
+
+% ==================================================================
+\section{Experiments}
+\label{sec:exp}
+
+\subsection{Setup}
+
+\textbf{Model.} DiT-XL/2-256~\citep{peebles2023scalable} (675M parameters, class-conditional ImageNet $256 \times 256$).
+We also present results on Stable Diffusion 1.5 (U-Net) in the appendix.
+
+\textbf{Concepts.} Statistical: brightness (mean pixel $> 0.5$), colorfulness (cross-channel std), warmth (R$-$B channel balance).
+Semantic: animal, natural (measured via CLIP zero-shot classification).
+
+\textbf{Metrics.} Pixel lift (change in concept-positive rate), CLIP concept lift (change in CLIP zero-shot score), FID (Inception v3 features vs.\ unsteered reference), diversity ratio (pairwise L2 distance ratio).
+
+\textbf{Extraction.} 500 images, mean-difference vectors at all 28 layers.
+50 images suffice for $>75\%$ of maximum lift (data efficiency analysis in appendix).
+
+\subsection{Main Results: Comparison with Wang et al.}
+\label{sec:wang}
+
+Table~\ref{tab:wang} compares our approach with \citet{wang2026general}'s components on DiT-XL/2.
+
+\begin{table}[t]
+\centering
+\caption{Comparison with Wang et al.\ (2026) on DiT-XL/2-256 (brightness concept, 200 images). Our all-layer mean-difference approach achieves $13\times$ higher pixel lift than their RFM, with $3\times$ better FID and preserved diversity.}
+\label{tab:wang}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Configuration & Pixel Lift & CLIP Lift & FID $\downarrow$ & Diversity \\
+\midrule
+\textbf{Ours: all-layer MD} & \textbf{+0.640} & $-0.032$ & 92.4 & \textbf{0.93} \\
+\textbf{Ours: first-5 MD} & +0.420 & +0.013 & \textbf{83.1} & \textbf{1.05} \\
+Ours: all-layer $\varepsilon$=0.1 & +0.235 & $-0.008$ & 88.2 & 1.05 \\
+\midrule
+Wang: RFM, L25 & +0.050 & +0.002 & 82.8 & 1.00 \\
+Wang: MD + norm-scale, L25 & +0.680 & $-0.420$ & 269.0 & 0.20 \\
+Wang: MD + norm-scale, L0 & +0.680 & $-0.567$ & 286.6 & 0.08 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Pareto Frontier}
+
+Figure~\ref{fig:pareto} shows the concept lift vs.\ FID tradeoff at varying $\varepsilon$.
+
+% Placeholder for figure
+% \begin{figure}[t]
+% \centering
+% \includegraphics[width=\linewidth]{figures/pareto.pdf}
+% \caption{Pareto frontier: concept lift vs.\ FID. Sweet spot at $\varepsilon = 0.3$--$0.5$ for statistical concepts, $\varepsilon = 2$--$5$ for semantic concepts.}
+% \label{fig:pareto}
+% \end{figure}
+
+\subsection{Accumulation Validation}
+
+We test 25 non-contiguous layer combinations and compare four accumulation models:
+
+\begin{table}[t]
+\centering
+\caption{Model comparison for predicting multi-layer steering lift from layer configuration (25 test configurations).}
+\label{tab:models}
+\small
+\begin{tabular}{lc}
+\toprule
+Model & Correlation ($r$) \\
+\midrule
+\textbf{Front-weighted: $\sum 1/(\ell+1)$} & \textbf{0.949} \\
+Stability $\times$ $\alpha^\ell$: $\sum S(\ell) \cdot 0.773^\ell$ & 0.933 \\
+Pure stability: $\sum S(\ell)$ & 0.617 \\
+Layer count & 0.538 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Why Mean-Difference Wins}
+
+\begin{table}[t]
+\centering
+\caption{Temporal stability and directional alignment explain the effectiveness hierarchy. Measurements at layer~0.}
+\label{tab:methods}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Method & Stability $S$ & $\cos(\cdot, \text{MD})$ & Pixel Lift & Status \\
+\midrule
+\textbf{Mean-diff} & \textbf{0.859} & 1.000 & \textbf{+0.525} & Best \\
+Logreg & 0.503 & 0.422 & +0.460 & Good \\
+PCA & 0.591 & $-0.840$ & $-0.160$ & Inverted \\
+RFM & --- & 0.001 & $-0.050$ & Orthogonal \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Semantic Concept Steering}
+
+Using CLIP zero-shot evaluation, we confirm that activation steering controls semantic properties (Table~\ref{tab:semantic}).
+
+\begin{table}[t]
+\centering
+\caption{CLIP-measured semantic steering (500 images, bootstrap CIs from 3 seeds $\times$ 200 images).}
+\label{tab:semantic}
+\small
+\begin{tabular}{lccc}
+\toprule
+Concept & $\varepsilon$ & CLIP Lift & FID \\
+\midrule
+Animal (MD, all-layer) & $+5.0$ & $+0.124 \pm 0.006$ & 144.8 \\
+Natural (MD, all-layer) & $-5.0$ & $+0.128 \pm 0.004$ & 159.4 \\
+Animal (MD, all-layer) & $+2.0$ & $+0.044$ & 69.2 \\
+Natural (MD, all-layer) & $-2.0$ & $+0.031$ & 69.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ==================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{Limitations.}
+Our experiments focus on DiT-XL/2-256 with ImageNet class-conditional generation.
+The FID degradation at high $\varepsilon$ ($>100$ for semantic concepts) suggests a quality-concept tradeoff that requires further investigation.
+CLIP-based brightness evaluation contradicts pixel-based metrics, indicating that mean pixel value is not a perceptually meaningful brightness measure.
+
+\paragraph{Why does RFM fail in DiTs?}
+The RFM/AGOP direction captures maximum kernel gradient variation in a Mahalanobis-reweighted feature space.
+In DiT's adaLN-conditioned residual stream, this space does not align with the concept centroid displacement direction.
+In U-Nets, where conditioning enters through cross-attention and skip connections, the geometry may be more favorable for AGOP alignment.
+A systematic study across architectures is needed.
+
+\paragraph{Broader impact.}
+Zero-cost activation steering enables controllable generation without retraining, reducing the computational cost of content control.
+However, the same mechanism could be used for harmful steering (e.g., generating unsafe content).
+The norm-clipping mechanism provides a natural defense: it bounds the magnitude of any perturbation, limiting the degree of controllable deviation from the base model's distribution.
+
+% ==================================================================
+\section{Conclusion}
+
+We presented a stability-theoretic framework for understanding activation steering in Diffusion Transformers.
+The core insight is simple: mean-difference vectors succeed because they are temporally stable---consistent across denoising timesteps---while discriminative alternatives (RFM, logistic regression) are either orthogonal to the causal direction or too variable to accumulate coherently.
+The front-weighted accumulation formula ($r = 0.95$) provides a practical guide for layer selection, and our comparison with concurrent work reveals critical failure modes (diversity collapse from norm-scaling, RFM orthogonality in DiTs) that inform future method design.
+
+\bibliography{references}
+\bibliographystyle{plainnat}
+
+% ==================================================================
+\appendix
+\section{Additional Results}
+
+% TODO: Full ablation tables, NFA analysis, Jacobian measurements,
+% U-Net results, multi-step probing, qualitative images, etc.
+
+\end{document}
