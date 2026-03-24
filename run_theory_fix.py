@@ -182,7 +182,7 @@ def measure_orthogonality_activation_space(pipe, commit):
     class_dir_matrix = torch.stack(class_directions)  # (n_classes, hidden_dim)
 
     # PCA of class directions = "class subspace" in activation space
-    U, S, Vt = torch.linalg.svd(class_dir_matrix, full_matrices=False)
+    U, S, Vt = torch.linalg.svd(class_dir_matrix.float(), full_matrices=False)
     k = min(10, len(all_classes))
     class_subspace = Vt[:k]  # (k, hidden_dim)
     var_explained = (S[:k]**2).sum() / (S**2).sum()
