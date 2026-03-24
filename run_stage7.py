@@ -170,7 +170,8 @@ def extract_new_concept_vectors(pipe, concept_name, labeler_fn, n_samples=500,
             )
 
         if "pca" in methods:
-            diff = pos_acts - neg_acts[:len(pos_acts)]  # matched pairs
+            n_pairs = min(len(pos_acts), len(neg_acts))
+            diff = pos_acts[:n_pairs] - neg_acts[:n_pairs]  # matched pairs
             if len(diff) > 1:
                 pca = PCA(n_components=1)
                 pca.fit(diff)

@@ -52,29 +52,64 @@ def append_result(commit, stage, metric, value, memory_gb, status, description):
     print(f"  >> {stage} | {metric}={value:.3f} | {status} | {description}")
 
 
+def denoise_one_step(pipe, latent, t, class_id):
+    """Run one denoising step using the pipeline's internal logic.
+
+    DiT predicts 8 channels (noise + variance); need to split and handle correctly.
+    """
+    transformer = get_dit_transformer(pipe)
+    scheduler = pipe.scheduler
+
+    t_tensor = torch.tensor([t], device=DEVICE)
+    class_labels = torch.tensor([class_id], device=DEVICE)
+
+    # CFG: concat conditional + unconditional
+    latent_input = torch.cat([latent, latent], dim=0)
+    t_input = torch.cat([t_tensor, t_tensor], dim=0)
+    class_input = torch.cat([class_labels, torch.tensor([NUM_CLASSES], device=DEVICE)])
+
+    with torch.no_grad():
+        model_output = transformer(
+            latent_input, timestep=t_input, class_labels=class_input,
+        ).sample
+
+    # DiT predicts 8 channels: split into noise and variance (like DiTPipeline does)
+    # Only use the noise prediction (first 4 channels)
+    channels = latent.shape[1]
+    model_output_cond, model_output_uncond = model_output.chunk(2)
+
+    # Split noise and learned variance
+    noise_cond = model_output_cond[:, :channels]
+    noise_uncond = model_output_uncond[:, :channels]
+
+    # CFG on the noise part only
+    noise_pred = noise_uncond + GUIDANCE_SCALE * (noise_cond - noise_uncond)
+
+    # Also need the variance part for the scheduler
+    # Use the conditional variance
+    if model_output_cond.shape[1] > channels:
+        variance = model_output_cond[:, channels:]
+        noise_pred = torch.cat([noise_pred, variance], dim=1)
+
+    step_output = scheduler.step(noise_pred, t, latent)
+    return step_output.prev_sample
+
+
 def fk_steer_brightness_simple(pipe, n_images, k_particles=4, n_resample_steps=5):
     """Simplified FK steering: at selected steps, generate K alternatives and pick brightest.
 
-    This is expensive but gives an upper bound on steering effectiveness.
     At each resampling step:
     1. Save the current latent state
     2. Generate K noisy variants (add small noise to current latent)
     3. Run one denoising step for each variant
-    4. Score each variant's partial decode (or full decode and pick best)
+    4. Score each variant by brightness proxy
     5. Continue with the best variant
-
-    For efficiency, we do this at a few key steps rather than every step.
     """
-    from diffusers import DiTPipeline, DDPMScheduler
     import copy
-
-    transformer = get_dit_transformer(pipe)
-    scheduler = pipe.scheduler
 
     images = []
     all_class_ids = []
 
-    # Process one image at a time (FK is per-image)
     for img_idx in tqdm(range(n_images), desc=f"FK(k={k_particles})"):
         class_id = torch.randint(0, NUM_CLASSES, (1,)).item()
         all_class_ids.append(class_id)
@@ -83,18 +118,15 @@ def fk_steer_brightness_simple(pipe, n_images, k_particles=4, n_resample_steps=5
         latent_shape = (1, 4, 32, 32)  # DiT-XL/2 at 256x256
         latent = torch.randn(latent_shape, device=DEVICE, dtype=DTYPE)
 
-        # Set up scheduler
-        scheduler_copy = copy.deepcopy(scheduler)
-        scheduler_copy.set_timesteps(NUM_INFERENCE_STEPS)
+        # Set up scheduler for this image
+        pipe.scheduler.set_timesteps(NUM_INFERENCE_STEPS)
+        timesteps = pipe.scheduler.timesteps
 
-        # Which steps to resample at
-        total_steps = len(scheduler_copy.timesteps)
+        total_steps = len(timesteps)
         resample_at = set(np.linspace(0, total_steps - 1, n_resample_steps + 2,
                                        dtype=int)[1:-1].tolist())
 
-        for step_idx, t in enumerate(scheduler_copy.timesteps):
-            t_tensor = torch.tensor([t], device=DEVICE)
-
+        for step_idx, t in enumerate(timesteps):
             if step_idx in resample_at:
                 # FK resampling: try K particles
                 best_latent = latent
@@ -102,45 +134,22 @@ def fk_steer_brightness_simple(pipe, n_images, k_particles=4, n_resample_steps=5
 
                 for k in range(k_particles):
                     if k == 0:
-                        candidate_latent = latent
+                        candidate = latent.clone()
                     else:
-                        # Add small noise to create variation
                         noise_scale = 0.1 * (1.0 - step_idx / total_steps)
-                        candidate_latent = latent + noise_scale * torch.randn_like(latent)
+                        candidate = latent + noise_scale * torch.randn_like(latent)
 
-                    # Run one denoising step
-                    with torch.no_grad():
-                        # Prepare class conditioning
-                        class_labels = torch.tensor([class_id], device=DEVICE)
+                    candidate_next = denoise_one_step(pipe, candidate, t, class_id)
 
-                        # CFG: concat conditional + unconditional
-                        latent_input = torch.cat([candidate_latent, candidate_latent], dim=0)
-                        t_input = torch.cat([t_tensor, t_tensor], dim=0)
-                        class_input = torch.cat([class_labels, torch.tensor([NUM_CLASSES], device=DEVICE)])
-
-                        noise_pred = transformer(
-                            latent_input,
-                            timestep=t_input,
-                            class_labels=class_input,
-                        ).sample
-
-                        # CFG
-                        noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
-                        noise_pred_cfg = noise_pred_uncond + GUIDANCE_SCALE * (noise_pred_cond - noise_pred_uncond)
-
-                        # Step
-                        step_output = scheduler_copy.step(noise_pred_cfg, t, candidate_latent)
-                        candidate_next = step_output.prev_sample
-
-                    # Quick score: decode and check brightness
-                    # For efficiency, only do full decode at later steps
-                    if step_idx > total_steps * 0.5:
+                    # Score: brightness proxy from latent statistics
+                    # At late steps, decode for better estimate
+                    if step_idx > total_steps * 0.7:
                         with torch.no_grad():
-                            decoded = pipe.vae.decode(candidate_next / pipe.vae.config.scaling_factor).sample
-                            decoded = (decoded / 2 + 0.5).clamp(0, 1)
-                            score = decoded.mean().item()  # brightness
+                            decoded = pipe.vae.decode(
+                                candidate_next / pipe.vae.config.scaling_factor
+                            ).sample
+                            score = decoded.mean().item()
                     else:
-                        # Heuristic: use latent statistics
                         score = candidate_next.mean().item()
 
                     if score > best_score:
@@ -149,24 +158,7 @@ def fk_steer_brightness_simple(pipe, n_images, k_particles=4, n_resample_steps=5
 
                 latent = best_latent
             else:
-                # Normal denoising step (no resampling)
-                with torch.no_grad():
-                    class_labels = torch.tensor([class_id], device=DEVICE)
-                    latent_input = torch.cat([latent, latent], dim=0)
-                    t_input = torch.cat([t_tensor, t_tensor], dim=0)
-                    class_input = torch.cat([class_labels, torch.tensor([NUM_CLASSES], device=DEVICE)])
-
-                    noise_pred = transformer(
-                        latent_input,
-                        timestep=t_input,
-                        class_labels=class_input,
-                    ).sample
-
-                    noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
-                    noise_pred_cfg = noise_pred_uncond + GUIDANCE_SCALE * (noise_pred_cond - noise_pred_uncond)
-
-                    step_output = scheduler_copy.step(noise_pred_cfg, t, latent)
-                    latent = step_output.prev_sample
+                latent = denoise_one_step(pipe, latent, t, class_id)
 
         # Final decode
         with torch.no_grad():
