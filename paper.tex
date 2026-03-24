@@ -410,6 +410,13 @@ Layer count & 0.538 \\
 \end{tabular}
 \end{table}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.5\linewidth]{figures/accumulation_validation.pdf}
+\caption{Accumulation equation validation: predicted lift ($\sum_{\ell \in \mathcal{L}} 1/(\ell+1)$, scaled) vs.\ measured lift across 25 non-contiguous layer configurations ($r = 0.949$). The formula correctly predicts that front-heavy combinations (top-right) outperform back-heavy ones (bottom-left).}
+\label{fig:accumulation}
+\end{figure}
+
 \subsection{Why Mean-Difference Wins}
 
 \begin{table}[t]
@@ -428,6 +435,20 @@ RFM & --- & 0.001 & $-0.050$ & Orthogonal \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/method_comparison.pdf}
+\caption{Why mean-difference wins. \textbf{(a)}~Mean-diff has the highest temporal stability at layer~0 ($S = 0.86$). \textbf{(b)}~RFM is orthogonal to mean-diff ($\cos \approx 0$); PCA is anti-aligned ($\cos = -0.84$). \textbf{(c)}~Steering effectiveness directly follows the stability and alignment pattern.}
+\label{fig:methods}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/wang_comparison.pdf}
+\caption{Comparison with Wang et al.~(2026) on DiT-XL/2. \textbf{(a)}~Their norm-scale achieves high pixel lift but \textbf{(b)}~at $3\times$ FID degradation and \textbf{(c)}~with catastrophic diversity collapse ($<10\%$ of baseline). Our all-layer mean-diff approach preserves 93\% diversity.}
+\label{fig:wang}
+\end{figure}
 
 \subsection{Semantic Concept Steering}
 
