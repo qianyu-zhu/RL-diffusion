@@ -639,3 +639,40 @@ Negative lift likely due to lower probe accuracy + noisy concept boundary
 
 All-layer brightness MD eps=-0.5: **0.575 ± 0.044** (95% CI: [0.489, 0.662])
 
+
+### Method Analysis Results — WHY Mean-Diff Beats Discriminative Methods
+
+**Temporal Stability (Layer 0):**
+| Method | Stability | Relative to MD |
+|--------|-----------|----------------|
+| mean_diff | **0.859** | 1.00× |
+| pca | 0.591 | 0.69× |
+| logreg | **0.503** | 0.59× |
+
+**Vector Alignment (Layer 0):**
+| | mean_diff | logreg | pca | rfm |
+|---|-----------|--------|-----|-----|
+| mean_diff | 1.000 | 0.422 | **-0.840** | **0.001** |
+| logreg | 0.422 | 1.000 | -0.247 | -0.007 |
+| pca | -0.840 | -0.247 | 1.000 | 0.001 |
+| rfm | 0.001 | -0.007 | 0.001 | 1.000 |
+
+**Key findings:**
+1. **RFM is orthogonal to mean-diff** (cos ≈ 0) at ALL layers. It finds a completely different direction. This is why RFM gives negative lift.
+2. **PCA is anti-aligned at L0** (cos = -0.84). This is why PCA gives negative lift with negative eps at L0, but positive lift with positive eps.
+3. **Logreg is partially aligned** (cos = 0.42) but has 41% lower temporal stability. The direction partially cancels across timesteps.
+4. **Mean-diff has the highest temporal stability** at early layers (0.859 vs 0.503 for logreg).
+
+**Explanation:** Mean-diff captures the population centroid displacement, which is:
+- Temporally stable (consistent direction across denoising steps)
+- Aligned with the "bulk" concept shift
+- Robust to amplification + clipping (perturbation preserves direction)
+
+Logreg captures the decision boundary normal, which:
+- Varies more across timesteps (lower stability)
+- Is partially aligned with the causal direction but rotated
+
+RFM captures the kernel gradient direction, which:
+- Is completely orthogonal to the causal direction
+- Is driven by the Mahalanobis-reweighted feature space, not the residual stream geometry
+
