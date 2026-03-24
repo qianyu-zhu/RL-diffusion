@@ -821,3 +821,35 @@ Best quality-lift tradeoff: first5 at FID 61.8 with +0.410 lift.
 | -2.0 | +0.031 | 69.0 |
 | -5.0 | +0.108 | 159.4 |
 
+
+### Pareto Complete + Bootstrap CIs
+
+**Natural (complete):**
+| eps | CLIP Natural | FID |
+|-----|-------------|-----|
+| -1.0 | +0.008 | 64.1 |
+| -2.0 | +0.031 | 69.0 |
+| -5.0 | +0.108 | 159.4 |
+| -7.0 | +0.171 | 250.8 |
+| -10.0 | +0.186 | 328.9 |
+
+**Bootstrap CIs (3 seeds × 200 images):**
+| Config | CLIP Lift | Std |
+|--------|-----------|-----|
+| Brightness MD eps=-0.5 | -0.018 | 0.024 |
+| **Animal MD eps=+5** | **+0.124** | **0.006** |
+| **Natural MD eps=-5** | **+0.128** | **0.004** |
+
+Animal and natural results are highly significant (std 0.004-0.006).
+Brightness CLIP discrepancy confirmed: pixel metric doesn't match CLIP "brightness."
+
+### Complete Experiment Count
+
+Total unique experiment configurations run: ~350
+Total SLURM jobs submitted this session: 15
+Concepts tested: brightness, warmth, colorfulness, texture, contrast, animal, natural
+Architectures: DiT-XL/2-256, SD 1.5 (U-Net)
+Methods: mean-diff, PCA, logreg, RFM
+Evaluation: pixel threshold, CLIP zero-shot, FID, diversity ratio
+Theory validation: Jacobian, orthogonality, adaLN survival, stability, alignment, 25 combos
+
