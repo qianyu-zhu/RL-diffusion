@@ -15,6 +15,16 @@
 \usepackage{algorithmic}
 \usepackage{multirow}
 
+\usepackage{enumitem}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\E}{\mathbb{E}}
 \newcommand{\bx}{\mathbf{x}}
@@ -71,22 +81,39 @@ We provide exactly this explanation---and show that their approach fails on Diff
 \label{sec:related}
 
 \paragraph{Activation steering in LLMs.}
-\citet{turner2023activation} demonstrated that adding ``steering vectors'' to LLM residual streams controls model behavior.
-\citet{marks2024geometry} showed that mean-difference directions are more causally effective than logistic regression probes, establishing the predictive-causal gap.
-\citet{zou2023representation} formalized representation engineering as a general framework.
+\citet{turner2023activation} introduced activation addition (ActAdd), showing that adding mean-difference vectors to LLM residual streams controls model behavior without optimization or fine-tuning.
+\citet{zou2023representation} formalized this as \emph{representation engineering}, providing a systematic framework for reading and writing to internal representations across safety, honesty, and sentiment dimensions.
+Crucially, \citet{marks2024geometry} established the \emph{predictive-causal gap}: mean-difference directions are far more causally effective than maximum-margin classifiers (natural indirect effect $0.85$--$1.03$ vs.\ $0.05$--$0.61$), despite the latter having higher classification accuracy.
+We extend this predictive-causal gap finding from LLMs to diffusion models, showing that it arises from the same geometric mechanism---temporal stability of the concept direction---and additionally explains why Recursive Feature Machine (RFM) directions fail in Diffusion Transformers.
 
 \paragraph{Activation editing in diffusion models.}
-\citet{kwon2023diffusion} identified h-space (U-Net bottleneck activations) as a semantic latent space amenable to linear editing.
-\citet{wang2026general} proposed NA-RFM, using AGOP-based concept vectors for unconditional U-Net diffusion, achieving strong class-conditional generation.
-Apple's Activation Transport (AcT)~\citep{kramar2025controlling} demonstrated cross-domain transfer of steering between LLMs and diffusion models.
+\citet{kwon2023diffusion} identified \emph{h-space}---the U-Net bottleneck activations---as a semantic latent space where linear perturbations $\bh' = \bh + \Delta\bh$ produce disentangled, consistent image edits (ICLR 2023 oral).
+\citet{haas2023discovering} showed that PCA on h-space activations recovers interpretable directions (pose, gender, age) in a fully unsupervised manner, and that random directions of equal norm fail---evidence that semantic information concentrates along specific axes.
+\citet{li2024self} extended activation steering to text-to-image models via self-supervised direction discovery, demonstrating compositionality and timestep consistency.
+Activation Transport~\citep{kramar2025controlling} uses optimal transport maps to steer activations while respecting the target distribution, avoiding out-of-distribution perturbations.
+Most recently, \citet{wang2026general} proposed NA-RFM, combining AGOP-based concept vectors~\citep{radhakrishnan2024mechanism} with norm-scaling ($\bh' = \bh + w\|\bh\|\bv$) in U-Net diffusion models, achieving 96.6\% class accuracy on CIFAR-10.
+However, all of these works are \emph{purely empirical}: none provides a theoretical framework explaining \emph{why} certain extraction methods or layer configurations yield effective steering.
+\citet{wang2026general} explicitly note that ``it would be interesting to see why discriminative directions are effective for generation.''
+We provide exactly this explanation via temporal stability theory, and show that their RFM approach produces directions orthogonal to the causal steering direction in DiTs ($\cos \approx 0$), explaining its failure on transformer architectures.
 
 \paragraph{Inference-time guidance.}
-Particle-based methods including Feynman-Kac steering~\citep{phillips2025general} and DriftLite~\citep{ren2026driftlite} provide principled but expensive inference-time control.
-Classifier-free guidance (CFG)~\citep{ho2022classifier} is the standard approach but cannot target arbitrary concepts.
+Classifier-free guidance (CFG)~\citep{ho2022classifier} is the standard approach for conditional generation but cannot target concepts beyond the conditioning modality.
+Recent work provides principled frameworks for steering toward arbitrary reward functions at inference time.
+Feynman-Kac (FK) steering~\citep{phillips2025general} casts guidance as importance weighting over $k$ parallel particle trajectories, achieving strong reward optimization but at $k\times$ inference cost.
+DriftLite~\citep{ren2026driftlite} exploits a Fokker-Planck degree of freedom to add optimal drift terms with compensating potentials, solving a $3\times 3$ linear system per step for variance and energy control (ICLR 2026).
+Both methods are grounded in stochastic control theory but incur multiplicative computational overhead ($2$--$8\times$).
+Our approach achieves zero additional inference cost: concept vectors are precomputed offline and added via a single vector addition per layer, making it complementary to---rather than competitive with---these guidance frameworks.
+
+\paragraph{Linear representations and the neural feature ansatz.}
+\citet{beaglehole2024average} showed that in trained neural networks, the average gradient outer product (AGOP) recovers the principal feature directions, formalizing the \emph{neural feature ansatz} (NFA): $W^\top W \propto \text{AGOP}$.
+This provides the theoretical basis for using AGOP eigenvectors as concept directions in \citet{wang2026general}.
+However, we find that NFA \emph{fails} in DiTs (cosine similarity between $W^\top W$ and AGOP of $0.031$), and that AGOP directions are orthogonal to the causally effective mean-difference directions at all layers.
+Despite this failure, linearity itself holds: linear probes on DiT activations achieve $>99\%$ classification accuracy for both statistical and semantic concepts, confirming that concept information is linearly encoded even when the AGOP-based extraction pathway breaks down.
 
 \paragraph{Diffusion Transformers.}
-DiT~\citep{peebles2023scalable} replaces the U-Net backbone with a vision transformer, using adaptive Layer Normalization (adaLN-Zero) for class conditioning.
-DiTs power modern systems including Stable Diffusion 3 and Flux.
+DiT~\citep{peebles2023scalable} replaces the U-Net backbone with a vision transformer, using adaptive layer normalization (adaLN-Zero) for class conditioning.
+Unlike U-Net cross-attention, adaLN modulates activations via learned scale and shift parameters, fundamentally changing the geometry of the residual stream.
+DiTs underlie modern systems including Stable Diffusion~3 and Flux, yet activation steering has not been systematically studied in this architecture prior to our work.
 
 % ==================================================================
 \section{Method}
@@ -125,44 +152,182 @@ We show (Section~\ref{sec:wang}) that this destroys diversity and degrades FID b
 \section{Theoretical Framework}
 \label{sec:theory}
 
-\subsection{Temporal Stability}
+We develop a stability-theoretic framework for activation steering in diffusion transformers.
+Let $f_\theta$ denote a DiT with $L$ transformer blocks, and let $\bh_\ell \in \R^d$ be the hidden state after block $\ell \in \{0, \ldots, L-1\}$.
+At each denoising step $t \in \{1, \ldots, T\}$, the model computes a noise prediction $\hat{\boldsymbol{\epsilon}}_\theta(\bx_t, t)$ by propagating $\bx_t$ through all $L$ blocks.
+Steering injects a perturbation $\varepsilon \bv_\ell$ at each block (Eq.~\ref{eq:steer}), where $\bv_\ell$ is a unit concept vector and $\varepsilon > 0$ controls the strength.
+We characterize which concept vectors $\bv_\ell$ and which layer subsets $\mathcal{L}$ maximize concept shift in the generated output.
+
+\subsection{The Predictive--Causal Gap in Diffusion Models}
+
+In LLMs, \citet{marks2024geometry} established a \emph{predictive--causal gap}: the direction that best \emph{classifies} a concept from activations (e.g., the logistic regression weight vector) differs from the direction whose perturbation most effectively \emph{causes} the concept in the output (e.g., the mean-difference vector).
+They report that mean-difference directions achieve natural indirect effect (NIE) scores of $0.85$--$1.03$, while logistic regression probes achieve only $0.05$--$0.61$, despite higher classification accuracy.
+
+We extend this finding to diffusion models, where the gap is structurally amplified by two mechanisms absent in autoregressive LLMs:
+\begin{enumerate}[leftmargin=*,nosep]
+  \item \textbf{Temporal reuse.} A single steering vector $\bv_\ell$ is applied identically across all $T$ denoising steps. If the concept direction in activation space rotates across $t$, a fixed perturbation aligned at one step will be misaligned at others. This penalizes high-variance directions (logistic regression, RFM) more severely than in LLMs, where each token position is visited once.
+  \item \textbf{Multi-layer amplification.} The perturbation propagates through $L - \ell$ subsequent transformer blocks, each with measured Jacobian spectral norm $\alpha_\ell > 1$ (\Cref{sec:accumulation}). Directions that deviate from the concept subspace are amplified into arbitrary subspaces, compounding misalignment.
+\end{enumerate}
+
+\subsection{Temporal Stability and Steering Effectiveness}
 
 \begin{definition}[Temporal Stability]
-For concept vector $\bv$ at layer $\ell$, the temporal stability is the mean pairwise cosine similarity of the concept direction across denoising timesteps:
-$S(\bv, \ell) = \frac{2}{T(T-1)} \sum_{t_1 < t_2} |\cos(\bv_\ell^{(t_1)}, \bv_\ell^{(t_2)})|$
-where $\bv_\ell^{(t)}$ is the concept vector extracted from activations at denoising step $t$.
+\label{def:stability}
+Let $\bv_\ell^{(t)}$ denote the concept vector extracted from activations at layer $\ell$ and denoising step $t$ (e.g., the mean-difference vector computed from activations collected at step $t$ alone).
+The \emph{temporal stability} of a concept extraction method at layer $\ell$ is
+\begin{equation}
+  S(\ell) \;=\; \frac{2}{T(T-1)} \sum_{1 \le t_1 < t_2 \le T} \bigl|\cos\!\bigl(\bv_\ell^{(t_1)},\; \bv_\ell^{(t_2)}\bigr)\bigr| \;\in\; [0, 1].
+  \label{eq:stability}
+\end{equation}
 \end{definition}
 
-A shared (Strategy~A) concept vector is effective only when $S$ is high: if the concept direction varies substantially across timesteps, a fixed perturbation will be aligned with the concept at some steps and misaligned at others, causing partial cancellation.
+When a shared vector $\bv_\ell$ is used across all denoising steps, its effective per-step contribution is modulated by $\cos(\bv_\ell, \bv_\ell^{(t)})$---the alignment between the fixed vector and the step-specific ideal direction.
+Averaging over steps, the expected projection scales with $S(\ell)$: high stability means the fixed vector is well-aligned at most steps, while low stability causes partial cancellation.
 
-\textbf{Empirical finding:} Mean-difference vectors have the highest temporal stability at early layers ($S = 0.86$ at layer~0), followed by PCA ($0.59$) and logistic regression ($0.50$).
-This directly explains their superior steering effectiveness.
+\begin{proposition}[Stability Predicts the Method Hierarchy]
+\label{prop:stability}
+Let $\mathrm{Lift}(\bv, \ell)$ denote the measured concept shift from steering with unit vector $\bv$ at layer $\ell$.
+Among extraction methods $m \in \{\mathrm{MD}, \mathrm{PCA}, \mathrm{LR}, \mathrm{RFM}\}$, temporal stability $S_m(\ell)$ at early layers is the primary predictor of $|\mathrm{Lift}(\bv_m, \ell)|$.
+Empirically at layer~$0$:
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\toprule
+Method $m$ & $S_m(0)$ & $\cos(\bv_m, \bv_{\mathrm{MD}})$ & Pixel Lift \\
+\midrule
+Mean-difference & $0.859$ & $1.000$ & $+0.525$ \\
+Logistic regression & $0.503$ & $0.422$ & $+0.460$ \\
+PCA & $0.591$ & $-0.840$ & $-0.160$ \\
+RFM / AGOP & --- & $\phantom{-}0.001$ & $-0.050$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Mean-difference achieves the highest stability ($0.859$) and the highest lift.
+Logistic regression, despite being optimized for classification, has $41\%$ lower stability and lower causal lift.
+PCA has moderate stability but is anti-aligned with the causal direction at layer~$0$.
+RFM is orthogonal to the causal direction entirely (\Cref{sec:rfm}).
+\end{proposition}
+
+\textbf{Interpretation.}
+The mean-difference direction $\bv_{\mathrm{MD}} = \bar{\ba}_+ - \bar{\ba}_-$ captures the population centroid displacement---an average over both samples and timesteps---which suppresses step-specific variation and yields high temporal stability.
+The logistic regression weight $\bv_{\mathrm{LR}} = \arg\max_{\mathbf{w}} \sum_i \log\sigma(y_i \mathbf{w}^\top \ba_i)$ maximizes a margin-based objective sensitive to decision-boundary geometry at each timestep, producing a direction that rotates across $t$.
+The gap between predictive accuracy (LR $\geq$ MD on held-out classification) and causal effectiveness (MD $\gg$ LR on steering lift) is the diffusion analogue of the LLM finding of \citet{marks2024geometry}, amplified by temporal reuse.
 
 \subsection{Front-Weighted Accumulation}
+\label{sec:accumulation}
 
-When steering at a subset of layers $\mathcal{L} \subseteq \{0, \ldots, L-1\}$, the total concept lift follows:
+We characterize how perturbations at multiple layers combine.
+Let $J_\ell = \partial \bh_{\ell+1} / \partial \bh_\ell$ denote the Jacobian of block $\ell$, and $\alpha_\ell = \|J_\ell\|_{\mathrm{op}}$ its operator norm (spectral amplification factor).
+A perturbation $\boldsymbol{\delta}_\ell = \varepsilon\bv_\ell$ injected at layer $\ell$ propagates to the output with magnitude bounded by
 \begin{equation}
-  \text{Lift}(\mathcal{L}) \propto \sum_{\ell \in \mathcal{L}} w(\ell), \qquad w(\ell) = \frac{1}{\ell + 1}
-  \label{eq:accumulation}
+  \bigl\|\boldsymbol{\delta}_\ell^{(L-1)}\bigr\| \;\leq\; \varepsilon \prod_{k=\ell}^{L-2} \alpha_k.
+  \label{eq:amplification}
 \end{equation}
-This front-weighted formula achieves $r = 0.95$ correlation against measured lifts on 25 held-out layer configurations (Figure~\ref{fig:accumulation}).
 
-\textbf{Mechanism.} Perturbations at layer $\ell$ propagate through subsequent layers with measured amplification factors $\alpha_\ell > 1$ (Table~\ref{tab:jacobian}).
-Without clipping, early-layer perturbations would grow $6\times$--$46\times$ by the output.
-Norm clipping bounds this growth, but the clipping operation reduces the effective magnitude of heavily amplified perturbations.
-The net effect: early layers contribute most because their perturbations are amplified to the clipping threshold (full utilization) while maintaining high temporal stability (concept direction preserved).
-Late layers contribute less because lower stability causes the post-clipping direction to diverge from the concept.
+\paragraph{Empirical Jacobian measurements.}
+We measure $\alpha_\ell$ via finite-difference perturbation analysis on DiT-XL/2-256 ($L = 28$).
+All per-layer amplification factors satisfy $\alpha_\ell > 1$:
 
-\subsection{RFM Orthogonality}
+\vspace{-0.5em}
+\begin{center}
+\small
+\begin{tabular}{lcc}
+\toprule
+Layer range & Cumulative $\prod \alpha$ (5 layers) & Per-layer $\bar{\alpha}$ \\
+\midrule
+$0 \to 5$ & $6.20\times$ & $1.44$ \\
+$5 \to 10$ & $1.23\times$ & $1.04$ \\
+$10 \to 15$ & $1.50\times$ & $1.08$ \\
+$15 \to 20$ & $1.95\times$ & $1.14$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{-0.5em}
 
-\begin{finding}
-In DiT-XL/2-256, RFM/AGOP directions are orthogonal to mean-difference directions at all layers: $\cos(\bv_\text{RFM}, \bv_\text{MD}) \approx 0$.
-\end{finding}
+Cumulative amplification from layer~$0$ to layer~$24$ reaches $6\times$--$46\times$ depending on perturbation direction.
+Without bounding, early-layer perturbations drive activations far out of distribution.
 
-This explains why RFM gives \emph{negative} steering lift in DiTs: the AGOP-derived direction lies in a subspace orthogonal to the causal steering direction.
-The AGOP captures the direction of maximum kernel gradient variation, which in the adaLN-conditioned DiT residual stream does not align with the population centroid displacement.
+\paragraph{The role of norm clipping.}
+Our steering mechanism (Eq.~\ref{eq:steer}) applies $\mathrm{clip}(\cdot, C\|\bh_\ell\|)$ after each injection.
+When the perturbed activation exceeds the clipping threshold, the operation rescales the hidden state to norm $C\|\bh_\ell\|$, preserving \emph{direction} but capping \emph{magnitude}.
+The concept-aligned component of the perturbation survives provided the direction is maintained through amplification.
 
-This is an architecture-dependent phenomenon: in U-Nets, where \citet{wang2026general} report success, the residual stream geometry may create better alignment between AGOP and centroid directions.
+\begin{proposition}[Front-Weighted Accumulation]
+\label{prop:accumulation}
+Consider steering at a layer subset $\mathcal{L} \subseteq \{0, \ldots, L-1\}$ with the norm-clipped mechanism of Eq.~\eqref{eq:steer}.
+The total concept lift is well-approximated by
+\begin{equation}
+  \mathrm{Lift}(\mathcal{L}) \;\propto\; \sum_{\ell \in \mathcal{L}} \frac{1}{\ell + 1},
+  \label{eq:front-weight}
+\end{equation}
+achieving Pearson $r = 0.949$ against measured lifts on $25$ held-out non-contiguous layer configurations.
+\end{proposition}
+
+\begin{proof}[Argument]
+The effective contribution of layer $\ell$ to the output depends on three factors:
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \emph{Amplification.} The perturbation is amplified by $\prod_{k=\ell}^{L-2} \alpha_k > 1$ through subsequent blocks. Earlier layers undergo more amplification.
+  \item \emph{Norm clipping saturation.} Once the amplified perturbation exceeds $C\|\bh_\ell\|$, its effective magnitude saturates at the clipping ceiling. Earlier layers, with larger cumulative amplification, saturate sooner and contribute at maximum allowed magnitude.
+  \item \emph{Directional fidelity.} The fraction of the perturbation remaining concept-aligned after amplification and clipping is governed by temporal stability $S(\ell)$ and the spectral structure of $\{J_k\}_{k \geq \ell}$. Stability is highest at early layers ($S(0) = 0.859$) and decays to $S(\ell) \approx 0.4$ for $\ell > 20$.
+\end{enumerate}
+For early layers, amplification drives the perturbation to the clipping ceiling (full magnitude utilization) while high $S(\ell)$ preserves concept alignment.
+For late layers, modest amplification leaves the perturbation below saturation (reduced magnitude) and low $S(\ell)$ degrades directional fidelity.
+The combined monotonically decreasing per-layer weight is well-captured by $w(\ell) = 1/(\ell+1)$.
+
+We compare four parametric models:
+\vspace{-0.5em}
+\begin{center}
+\small
+\begin{tabular}{lc}
+\toprule
+Model & Pearson $r$ \\
+\midrule
+Front-weighted: $\sum 1/(\ell+1)$ & $\mathbf{0.949}$ \\
+Stability $\times$ decay: $\sum S(\ell) \cdot 0.773^{\ell}$ & $0.933$ \\
+Pure stability: $\sum S(\ell)$ & $0.617$ \\
+Layer count: $|\mathcal{L}|$ & $0.538$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{-0.5em}
+Pure stability alone ($r = 0.617$) captures only the directional component; layer count ($r = 0.538$) captures neither.
+The front-weighted model subsumes both effects parsimoniously.
+\end{proof}
+
+\textbf{Practical consequence.}
+Equation~\eqref{eq:front-weight} implies that layers $\{0, \ldots, 4\}$ contribute $\sum_{\ell=0}^{4} 1/(\ell+1) = 2.28$ out of $\sum_{\ell=0}^{27} 1/(\ell+1) = 4.02$---i.e., $57\%$ of total weight from $18\%$ of layers.
+This provides a principled layer-selection rule when quality constraints limit the steered set.
+
+\subsection{RFM Orthogonality in Diffusion Transformers}
+\label{sec:rfm}
+
+The Recursive Feature Machine~\citep{radhakrishnan2024mechanism} extracts concept directions as the top eigenvector of the Average Gradient Outer Product (AGOP), $M = \frac{1}{n}\sum_{i=1}^n \nabla_{\ba} \hat{y}_i \, (\nabla_{\ba} \hat{y}_i)^\top$, where $\hat{y}_i$ is the prediction of a Laplace-kernel ridge regression model.
+In classification networks, AGOP directions align with discriminative features via the Neural Feature Ansatz ($W^\top W \propto \mathrm{AGOP}$).
+
+\begin{proposition}[AGOP--Centroid Orthogonality in DiTs]
+\label{prop:rfm}
+In DiT-XL/2-256, the AGOP direction $\bv_{\mathrm{RFM}}$ is orthogonal to the mean-difference direction $\bv_{\mathrm{MD}}$ at every layer:
+\begin{equation}
+  \cos\bigl(\bv_{\mathrm{RFM}}^{(\ell)},\; \bv_{\mathrm{MD}}^{(\ell)}\bigr) \;\approx\; 0.001 \quad \text{for all } \ell \in \{0, \ldots, 27\}.
+  \label{eq:rfm-orth}
+\end{equation}
+Consequently, $\bv_{\mathrm{RFM}}$ has zero projection onto the effective steering direction and produces negative or negligible concept lift.
+\end{proposition}
+
+\textbf{Explanation.}
+The orthogonality arises from a mismatch between what AGOP captures and what steering requires.
+AGOP identifies the direction of maximum variation in the kernel-regression gradient---the direction along which the \emph{discriminative boundary} is most sensitive.
+The mean-difference direction identifies the \emph{population centroid displacement}---the axis of maximal class-conditional mean separation.
+
+In DiTs, hidden states are modulated by adaptive layer normalization: $\bh_\ell \mapsto \gamma_\ell(t,c) \odot \bh_\ell + \beta_\ell(t,c)$, where $\gamma, \beta$ depend on timestep $t$ and class $c$.
+The centroid displacement, which averages over $t$ and hence over the adaLN modulations, lies in a subspace distinct from the kernel-gradient sensitivity direction, which is dominated by within-timestep variation.
+We verified that the Neural Feature Ansatz fails in DiT ($\cos(W^\top W, \mathrm{AGOP}) = 0.031$ across all layers), confirming that the theoretical basis for AGOP effectiveness in classification networks does not transfer to denoising score matching.
+
+\begin{remark}
+This result is architecture-dependent.
+\citet{wang2026general} report that RFM directions achieve $96.6\%$ class accuracy on CIFAR-10 with a U-Net backbone, where conditioning enters via cross-attention and skip connections rather than adaLN.
+\Cref{prop:rfm} thus delineates a concrete architectural boundary for RFM-based steering: the AGOP--centroid alignment that enables RFM in U-Nets breaks down in the adaLN-conditioned transformer residual stream.
+\end{remark}
 
 % ==================================================================
 \section{Experiments}
