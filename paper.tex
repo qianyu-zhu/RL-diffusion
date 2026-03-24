@@ -41,6 +41,13 @@
 \begin{document}
 \maketitle
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/teaser_grid.png}
+\caption{Activation steering in DiT-XL/2-256. Each column shows the same class; rows show different steering concepts applied at zero additional inference cost. Statistical concepts (brightness, warmth) produce subtle but consistent shifts. Semantic concepts (animal, natural) require larger $\varepsilon$ but visibly alter scene composition. Concepts compose linearly (bottom row).}
+\label{fig:teaser}
+\end{figure}
+
 \begin{abstract}
 We study activation steering in Diffusion Transformers (DiTs)---adding learned concept vectors to intermediate activations during denoising to control generation at zero inference cost.
 We develop a \emph{stability-theoretic framework} explaining which extraction methods and layer configurations yield effective steering.
