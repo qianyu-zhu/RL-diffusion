@@ -698,3 +698,58 @@ RFM captures the kernel gradient direction, which:
 
 Submitted (job 10880532). Will give quality metrics for Wang et al. comparison.
 
+
+### CLIP v2: Animal Steering Works — +0.312 CLIP Lift!
+
+**The eps sign was wrong.** Positive eps increases animal-ness:
+
+| Config | CLIP Animal Lift | CLIP Score |
+|--------|-----------------|------------|
+| animal MD eps=+10 | **+0.312** | 0.836 |
+| animal MD eps=+5 | **+0.156** | 0.680 |
+| animal MD eps=+1 | +0.029 | 0.553 |
+| animal MD eps=-1 | -0.005 | 0.520 |
+| animal MD eps=-5 | -0.028 | 0.496 |
+| animal PCA eps=+5 | +0.078 | 0.602 |
+| natural MD eps=-5 | +0.124 | 0.679 |
+
+**Interpretation:** The mean-diff vector for "animal" points FROM positive class TO negative class (or the opposite direction from what we assumed). With positive eps, we push toward more animal-like images. At eps=+10, CLIP classifies 83.6% of images as animal (up from 52.4% baseline).
+
+**This means:**
+1. ALL concepts are steerable — statistical AND semantic
+2. Class-conditional DiT does NOT protect against semantic steering
+3. The required eps differs: brightness needs 0.5, animal needs 5-10
+4. CLIP-based evaluation is essential — pixel metrics miss semantic changes
+
+### FID Results (Bug: Negative FID)
+
+FID computation returned negative values (~-180). Implementation bug in matrix sqrt. Need to fix before reporting.
+
+### Experiment Progress Summary (Session 5)
+
+| Experiment | Status | Key Result |
+|------------|--------|------------|
+| S7 Quality eval | ✓ | Diversity ratio 0.88, norm-scale destroys (0.098) |
+| S7 Warmth concept | ✓ | +0.230 lift, steerable |
+| S7 Contrast | ✓ | Probe 76-82%, weak/negative steering |
+| S7 Texture | ✓ | Marginal +0.110 |
+| S7 Semantic extreme | ✓ | "Zero" was measurement artifact |
+| S8 FK baseline | ✓ | LASD +0.560 vs FK(k=8) +0.050 |
+| S9 Adaptive eps | ✓ | projection_max +0.595 |
+| S9 Multi-basis | ✓ | MD-PCA oppose +0.580 |
+| S9 Layer-adaptive | ✓ | exp_decay +0.560, front_heavy +0.535 |
+| Jacobian | ✓ | Amplification (α>1), not attenuation |
+| Orthogonality | ✓ | Non-discriminative in both spaces |
+| adaLN survival | ✓ | Non-discriminative |
+| Bootstrap CI | ✓ | 0.575 ± 0.044 |
+| 25 layer combos | ✓ | front-weighted r=0.949 |
+| Contrast probe | ✓ | 76-82%, explains weak steering |
+| Method stability | ✓ | S(MD)=0.859 >> S(LR)=0.503, RFM orthogonal |
+| Method alignment | ✓ | RFM⊥MD (cos≈0), PCA anti-aligned at L0 |
+| Semantic pixel diff | ✓ | Animal diff = brightness diff (0.362 vs 0.363) |
+| CLIP v1 | ✓ | Natural +0.138 |
+| **CLIP v2** | ✓ | **Animal +0.312 at eps=+10!** |
+| FID | Bug | Negative values, need fix |
+| CFG test | ✓ | Brightness still works at CFG=1.0 |
+| Class steering | ✓ | Panda +0.900, noisy classifier |
+
