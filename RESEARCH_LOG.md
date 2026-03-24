@@ -676,3 +676,25 @@ RFM captures the kernel gradient direction, which:
 - Is completely orthogonal to the causal direction
 - Is driven by the Mahalanobis-reweighted feature space, not the residual stream geometry
 
+
+### CLIP Semantic Evaluation Results
+
+| Steering Config | CLIP Concept Lift | Key Side Effects |
+|----------------|-------------------|------------------|
+| brightness all-layer MD -0.5 | bright: -0.042 | colorful: -0.104, warm: -0.072 |
+| brightness L0 MD -0.5 | bright: +0.012 | minimal |
+| animal all-layer MD -5.0 | animal: -0.028 | natural: +0.143, bright: -0.372 |
+| animal all-layer MD -1.0 | animal: +0.004 | minimal |
+| animal PCA -5.0 | animal: +0.049 | warm: +0.227, bright: -0.221 |
+| **natural all-layer MD -5.0** | **natural: +0.138** | bright: -0.265, colorful: +0.109 |
+
+**Key findings:**
+1. **Natural steering confirmed:** +13.8% CLIP lift. Semantic steering IS effective.
+2. **Animal steering is weak but nonzero:** PCA gives +4.9%, mean-diff gives -2.8% (wrong sign — may need eps flip).
+3. **Brightness all-layer has side effects:** CLIP sees reduced colorfulness and warmth, not increased brightness. The binary brightness metric (pixel > 0.5) and CLIP's "bright photo" concept diverge.
+4. **Steering at large eps causes cross-concept effects:** animal eps=-5 makes images darker (bright: -0.372) and more natural (+0.143).
+
+### FID Computation
+
+Submitted (job 10880532). Will give quality metrics for Wang et al. comparison.
+
