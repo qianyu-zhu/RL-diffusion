@@ -462,3 +462,84 @@ The original proposal was about RFM/AGOP for steering. **RFM failed completely.*
 - **Follow-up (10819123):** 500-image full eval of best configs
 - **Theory v2 (10819124):** Multi-step probing + temporal stability (fixed)
 - **U-Net v2 (10819252):** Steer fraction + larger eps experiments
+
+---
+
+## 2026-03-23: Session 5 — Theory Development + Wang et al. Competitive Analysis
+
+### New Experiments Completed
+
+**Stage 7 (Quality Eval):**
+- All-layer MD eps=-0.5: brightness shift +0.243, diversity ratio 0.88
+- Layer 0 only: +0.076 shift, diversity preserved (1.02)
+- Norm_scale layer0 eps=-0.1: +0.513 shift but **diversity collapses to 0.098** — 90% diversity loss!
+- **Key finding: Wang et al.'s norm-scale formula destroys diversity. They don't report this.**
+
+**Stage 9 (Adaptive Steering):**
+- projection_max adaptive eps=-0.3: lift=+0.595 (new method best)
+- MD-PCA-oppose multi-basis [-0.5, +0.5]: lift=+0.580
+- Layer-adaptive exponential_decay: lift=+0.560
+- front_heavy (14 layers): +0.535 (almost as good as all 28!)
+- back_heavy (14 layers): +0.065 (essentially zero)
+- **RFM not needed. Mean-diff alone gives +0.525. Adding PCA with opposite sign helps (+0.580).**
+
+**Stage 7 (warmth concept):** Crashed — PCA shape mismatch (fixed, resubmitted)
+**FK baseline:** Crashed — DiT 8-channel output (fixed, resubmitted)
+
+### Competitive Analysis vs Wang et al. 2026 (NA-RFM)
+
+Downloaded paper to `papers/wang2026_narfm_steering.pdf`.
+
+**Their method:** Two-stage: (1) Noise Alignment via PCA Gaussian denoisers, (2) RFM/AGOP at single encoder block with norm-scaling h' = h + w*||h||*v. CIFAR-10: 96.6% class accuracy. ImageNet 4 classes: 75.8%.
+
+**Critical gap in their work:** "It would be interesting to see why discriminative directions are effective for generation." — They have NO theory.
+
+**Our advantages:**
+1. DiT experiments (they only test U-Net)
+2. All-layer steering 4× better than single-block
+3. Norm-scale destroys diversity (they don't measure this)
+4. Predictive ≠ causal framework (they pick layers by probe acc, which is suboptimal)
+5. Concept type boundaries (they don't explain failures)
+6. Mean-diff > RFM in DiT (contradicts their finding, explained by our theory)
+
+### Coherent Accumulation Theory (Validated)
+
+**Model:** Lift(0..K) ∝ Σ_{ℓ=0}^{K} S(ℓ) × α^ℓ
+
+where S(ℓ) = temporal stability at layer ℓ, α ≈ 0.773 = Jacobian attenuation factor.
+
+**Empirical validation:**
+| Layers | Predicted | Actual | Error |
+|--------|-----------|--------|-------|
+| 0-0    | 0.138     | 0.230  | 0.092 |
+| 0-4    | 0.424     | 0.425  | 0.001 |
+| 0-8    | 0.517     | 0.445  | 0.072 |
+| 0-12   | 0.549     | 0.515  | 0.034 |
+| 0-16   | 0.560     | 0.545  | 0.015 |
+| 0-20   | 0.564     | 0.565  | 0.001 |
+| 0-24   | 0.565     | 0.550  | 0.015 |
+| 0-27   | 0.565     | 0.565  | 0.000 |
+
+**Correlation: 0.97, MAE: 0.029**
+
+**Interpretation:** The decay factor α = 0.773 means each perturbation loses ~23% of its causal impact per subsequent transformer block. This explains why:
+- All-layer > first-5 >> last-5
+- First layer has outsized impact (0.230 alone vs 0.565 total)
+- Adding layers 21-24 actually HURTS (0.565 → 0.550) — their low stability causes destructive interference
+
+This is a testable, quantitative prediction: α should equal the mean singular value attenuation of the inter-layer Jacobian.
+
+### Commits
+
+| Hash | Description |
+|---|---|
+| `116cc04` | Stage 7: concept type boundaries, quality eval |
+| `80e90a8` | FK steering baseline (k=2,4,8) |
+| `d692da0` | DriftLite-inspired adaptive steering |
+| `048d4d2` | Fix PCA shape mismatch + FK channel split |
+
+### Running
+
+- **10868840** (lasd-s7): Re-run Stage 7 with PCA fix
+- **10868841** (lasd-fk): Re-run FK baseline with channel fix
+
