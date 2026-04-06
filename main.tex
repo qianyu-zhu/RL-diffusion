@@ -1,0 +1,762 @@
+\documentclass[11pt]{article}
+
+% ---------- packages ----------
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+
+\hypersetup{colorlinks=true,linkcolor=blue!60!black,citecolor=green!50!black,urlcolor=blue!70!black}
+
+\title{Reinforcement Learning, Distillation, and Steering\\of Diffusion Models: A Literature Review}
+\author{}
+\date{\today}
+
+% ------------------------------------------------------------------
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Diffusion and flow-based generative models have become the dominant paradigm for high-fidelity image, video, and scientific data generation.
+A rapidly growing body of work seeks to \emph{control} these models---aligning their outputs with human preferences via reinforcement learning, accelerating sampling through distillation, and steering generation at inference time without retraining.
+This review surveys three intertwined threads:
+(i) RL-based fine-tuning of diffusion models,
+(ii) distillation and few-step generation techniques including flow maps and velocity matching, and
+(iii) inference-time scaling and steering via search and reweighting.
+We highlight recent advances, identify common theoretical underpinnings, and discuss open problems at the intersection of these areas.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ==================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Score-based diffusion models \citep{song2021scorebased,ho2020denoising} and their continuous-time formulation via stochastic differential equations (SDEs) \citep{song2021sde} have achieved remarkable success in image synthesis \citep{dhariwal2021diffusion}, video generation, protein design, and robotic planning.
+Despite their quality, two fundamental limitations drive ongoing research:
+\begin{enumerate}
+    \item \textbf{Alignment.} Pre-trained diffusion models generate samples from the training distribution, which may not match downstream objectives such as aesthetic quality, safety, or task-specific rewards.
+    \item \textbf{Efficiency.} Standard samplers require tens to hundreds of neural-function evaluations (NFEs), making real-time deployment costly.
+\end{enumerate}
+
+A third, complementary direction---\textbf{inference-time steering}---seeks to guide already-trained models toward high-reward regions without any gradient-based fine-tuning, borrowing ideas from sequential Monte Carlo and search.
+
+This review is organized as follows.
+\Cref{sec:evolution} traces the historical evolution of the field.
+\Cref{sec:background} reviews the mathematical foundations of diffusion and flow-matching models.
+\Cref{sec:rl} surveys reinforcement-learning approaches to diffusion fine-tuning.
+\Cref{sec:distillation} covers distillation and few-step generation.
+\Cref{sec:steering} discusses inference-time steering and search.
+\Cref{sec:applications} highlights applications to planning, manifolds, and scientific domains.
+\Cref{sec:lasd} develops a concrete research proposal for linear activation steering of diffusion models.
+\Cref{sec:discussion} concludes with open problems.
+
+% ==================================================================
+\section{How the Field Evolved: A Ten-Year Arc}
+\label{sec:evolution}
+
+The intersection of diffusion models and sequential decision-making has undergone rapid transformation.
+We identify five broad phases (\Cref{fig:timeline}).
+
+\begin{figure}[h]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}r p{0.82\textwidth}@{}}
+\toprule
+\textbf{Era} & \textbf{Key developments} \\
+\midrule
+2015--19 & \emph{Theoretical foundations.}
+Score matching \citep{vincent2011connection}, deep energy models, and early work on denoising autoencoders lay the mathematical groundwork.
+Neural ODEs \citep{chen2018neuralode} introduce continuous-depth networks, planting the seed for flow-based generation. \\[4pt]
+
+2020--21 & \emph{The diffusion revolution.}
+DDPM \citep{ho2020denoising} demonstrates that iterative denoising rivals GANs.
+Score-based SDEs \citep{song2021scorebased} unify discrete and continuous formulations.
+Diffusion models surpass GANs on ImageNet \citep{dhariwal2021diffusion}, triggering an explosion of interest. \\[4pt]
+
+2022 & \emph{Diffusion meets decision-making.}
+Janner et al.\ propose \emph{Diffuser} \citep{janner2022planning}---the first work to use a diffusion model as a trajectory planner in offline RL.
+Decision Diffuser follows, framing return-conditioned generation as a diffusion process.
+These two papers establish the core idea: \emph{a diffusion model can serve as a multimodal policy or planner}, naturally capturing the diversity of optimal behaviors. \\[4pt]
+
+2023 & \emph{Rapid expansion.}
+The field broadens along multiple axes simultaneously:
+\textbf{(a)}~\emph{Offline RL} becomes the dominant application---diffusion policies replace Gaussian or categorical policies in actor-critic and Q-learning frameworks (IDQL, DiffCPS, MetaDiffuser).
+\textbf{(b)}~\emph{Imitation learning} takes off with Diffusion Policy \citep{chi2023diffusion}, which becomes a de facto standard for visuomotor robot learning.
+\textbf{(c)}~\emph{Data synthesis}---using diffusion to generate synthetic trajectories for data augmentation (Synthetic Experience Replay, GenAug).
+\textbf{(d)}~\emph{Multi-agent and constrained RL} appear (MADiff, AlignDiff).
+\textbf{(e)}~The first \emph{survey} paper consolidates the field \citep{zhu2023diffusion}.
+Flow matching \citep{lipman2023flow,liu2023flow} emerges as a cleaner training paradigm, and consistency models \citep{song2023consistency} take the first steps toward one-step generation. \\[4pt]
+
+2024 & \emph{Maturation and efficiency.}
+Three trends dominate:
+\textbf{(a)}~\emph{RL fine-tuning of image diffusion}---DDPO and DPPO \citep{black2024training,fan2024reinforcement} apply PPO to the denoising chain, proving that RLHF works for diffusion models just as it does for LLMs.
+\textbf{(b)}~\emph{World models}---diffusion is used to learn environment dynamics (visual details in Atari, autonomous driving).
+\textbf{(c)}~\emph{Robustness and safety}---safe offline RL, adversarial perturbation resistance, and preference alignment (PrefPaint, AlignDiff at ICLR).
+Efficiency concerns drive work on latent diffusion planning and hierarchical decomposition. \\[4pt]
+
+2025--26 & \emph{Convergence and new frontiers.}
+The three threads of this review---RL, distillation, steering---begin to \emph{merge}.
+One-step generation matures (MeanFlow, TVM, Drifting), eliminating the sampling bottleneck.
+RL moves from the reverse chain to the forward process (DiffusionNFT).
+Inference-time steering via SMC (Feynman--Kac) and stochastic flow maps (Meta Flow Maps) offers alignment \emph{without retraining}.
+The field expands beyond images: diffusion LLMs with RL (NeurIPS 2025), molecular design, Riemannian manifolds, and long-horizon robotic planning with search (CDGS). \\
+\bottomrule
+\end{tabular}
+\caption{Evolution of diffusion models in RL and controlled generation, 2015--2026.}
+\label{fig:timeline}
+\end{figure}
+
+\paragraph{The big picture.}
+The arc bends from \emph{generation} to \emph{control}.
+Early diffusion models were pure samplers---given noise, produce data.
+The field then discovered that the same iterative refinement structure makes diffusion models natural \emph{policies} (each denoising step is an action) and \emph{planners} (the trajectory is a sequence of states).
+Once this connection was established, the standard RL toolkit---policy gradients, value functions, reward shaping, KL regularization---could be imported wholesale.
+In parallel, the efficiency revolution (consistency models $\to$ flow maps $\to$ one-step drifting) removed the computational barrier, while inference-time steering showed that not all control requires gradient-based training.
+
+The current frontier is \emph{unification}: models that are simultaneously fast (few-step), aligned (reward-optimized), and steerable (controllable at test time), with applications spanning robotics, drug design, and language.
+
+% ==================================================================
+\section{Background: Diffusion and Flow-Matching Models}
+\label{sec:background}
+
+\subsection{Score-Based Diffusion Models}
+
+Diffusion models define a forward noising process that gradually corrupts data $\mathbf{x}_0 \sim p_{\mathrm{data}}$ into Gaussian noise via the SDE
+\begin{equation}
+    d\mathbf{x}_t = f(\mathbf{x}_t, t)\,dt + g(t)\,d\mathbf{w}_t, \quad t \in [0, T],
+\end{equation}
+where $f$ is the drift, $g$ the diffusion coefficient, and $\mathbf{w}_t$ a standard Wiener process.
+Generation proceeds by simulating the \emph{reverse-time} SDE \citep{anderson1982reverse}:
+\begin{equation}
+    d\mathbf{x}_t = \bigl[f(\mathbf{x}_t, t) - g(t)^2 \nabla_{\mathbf{x}} \log p_t(\mathbf{x}_t)\bigr]\,dt + g(t)\,d\bar{\mathbf{w}}_t.
+\end{equation}
+A neural network $s_\theta(\mathbf{x}_t, t) \approx \nabla_{\mathbf{x}} \log p_t(\mathbf{x}_t)$ is trained via denoising score matching \citep{vincent2011connection,song2021scorebased}.
+Alternatively, the deterministic probability flow ODE shares the same marginals, enabling exact likelihood computation \citep{song2021sde}.
+
+\subsection{Flow Matching}
+
+Flow matching \citep{lipman2023flow,liu2023flow,albergo2023building} provides a simulation-free training objective for continuous normalizing flows (CNFs).
+Given a time-dependent vector field $v_\theta(\mathbf{x}, t)$ that transports a simple prior $p_0$ to the data distribution $p_1$, the flow-matching loss is
+\begin{equation}
+    \mathcal{L}_{\mathrm{FM}} = \mathbb{E}_{t, \mathbf{x}_t}\bigl[\| v_\theta(\mathbf{x}_t, t) - u_t(\mathbf{x}_t) \|^2\bigr],
+\end{equation}
+where $u_t$ is a conditional vector field derived from optimal-transport or Gaussian interpolation paths.
+Flow matching unifies diffusion and flow-based models and has become the default training paradigm for state-of-the-art systems such as Stable Diffusion 3 and Flux.
+
+\subsection{Connections and Notation}
+
+Throughout this review, we use ``diffusion model'' broadly to include both score-based diffusion and flow-matching models.
+The key shared structure is a learned transport map $\mathbf{x}_0 \mapsto \mathbf{x}_T$ (or vice versa) parameterized by a neural velocity or score field, with generation requiring numerical integration of an ODE or SDE.
+
+% ==================================================================
+\section{Reinforcement Learning for Diffusion Models}
+\label{sec:rl}
+
+\subsection{Motivation}
+
+Pre-trained diffusion models can be viewed as policies in an MDP where each denoising step is an action.
+Given a reward function $r(\mathbf{x}_0)$ defined on generated samples, the goal is to fine-tune the model so that it produces high-reward outputs while staying close to the pre-trained distribution (to avoid mode collapse).
+This naturally leads to a KL-regularized RL objective:
+\begin{equation}
+    \max_\theta\; \mathbb{E}_{\mathbf{x}_0 \sim p_\theta}\bigl[r(\mathbf{x}_0)\bigr] - \beta\, \mathrm{KL}\bigl(p_\theta \| p_{\mathrm{pre}}\bigr).
+    \label{eq:rl_objective}
+\end{equation}
+
+\subsection{Policy-Gradient Methods}
+
+\textbf{DPPO and DDPO.}
+\citet{black2024training,fan2024reinforcement} cast the multi-step denoising chain as a finite-horizon MDP and apply proximal policy optimization (PPO).
+Each denoising step $\mathbf{x}_{t-1} \sim p_\theta(\cdot | \mathbf{x}_t)$ is treated as an action, with the terminal reward $r(\mathbf{x}_0)$ propagated via standard returns.
+These methods demonstrated that RLHF-style training can improve prompt--image alignment, compressibility, and aesthetic scores.
+
+\textbf{FlowGRPO.}
+Group Relative Policy Optimization (GRPO) \citep{shao2024deepseekmath} has been adapted for flow-based diffusion models.
+It generates a group of samples, computes relative advantages within the group, and updates the policy via a clipped surrogate objective---avoiding the need for a learned value function.
+
+\subsection{DiffusionNFT: RL via the Forward Process}
+
+\citet{zheng2025diffusionnft} propose a fundamentally different approach: rather than discretizing the reverse sampling process, DiffusionNFT optimizes the model \emph{on the forward process via flow matching}.
+The method contrasts positive and negative generated samples to establish an improvement direction and incorporates reward signals into a supervised flow-matching objective.
+Key advantages include:
+\begin{itemize}
+    \item Compatibility with arbitrary ODE/SDE solvers (no solver-specific discretization).
+    \item No need for likelihood estimation during training.
+    \item Up to $25\times$ more efficient than FlowGRPO, achieving a GenEval score of 0.98 vs.\ 0.95 in fewer training steps.
+\end{itemize}
+This work highlights a growing trend: leveraging the \emph{forward} process structure of flow matching for RL, rather than treating the reverse chain as a black-box MDP.
+
+\subsection{Off-Policy and Value-Based Approaches}
+
+An alternative to on-policy rollouts is to estimate the \emph{value function} at intermediate diffusion states, enabling off-policy updates.
+\citet{potaptchik2026meta} (discussed in \Cref{sec:mfm}) show that stochastic one-step posterior sampling can provide efficient value-function estimates, bypassing expensive trajectory simulations.
+More broadly, connections to stochastic optimal control \citep{uehara2024finetuning,berner2022optimal} provide a principled framework for diffusion RL, viewing the reverse SDE as a controlled process and the reward as a terminal cost.
+
+% ==================================================================
+\section{Distillation and Few-Step Generation}
+\label{sec:distillation}
+
+Reducing the number of sampling steps from $\sim\!100$ to $1$--$4$ NFEs is critical for deployment.
+We organize this section by the key ideas: consistency/flow maps, velocity matching, and mean-flow approaches.
+
+\subsection{Consistency Models and Flow Maps}
+
+Consistency models \citep{song2023consistency} enforce that all points on the same ODE trajectory map to the same clean output, enabling single-step generation.
+\textbf{Flow maps} generalize this idea: rather than mapping to $t=0$, they learn to jump between \emph{arbitrary} pairs of timesteps along the flow.
+Self-distillation techniques progressively double the step size, training a student that matches a two-step teacher composed of the same model.
+
+\subsection{Generalised Flow Maps on Riemannian Manifolds}
+
+\citet{davis2025gfm} extend flow maps from Euclidean space to Riemannian manifolds, proposing three self-distillation strategies---Lagrangian, Eulerian, and Progressive.
+Their \textbf{Generalised Flow Maps} (GFMs) unify consistency models and shortcut models within a manifold setting, achieving state-of-the-art single- and few-step generation quality on geospatial data, RNA structures, and hyperbolic manifolds.
+This work is significant because many scientific data (molecular conformations, climate fields on the sphere) live on non-Euclidean geometries.
+
+\subsection{Terminal Velocity Matching}
+
+\citet{zhou2025tvm} introduce \textbf{Terminal Velocity Matching} (TVM), which models transitions between diffusion timesteps while regularizing at the \emph{endpoint} rather than the starting point.
+They prove that TVM provides an upper bound on the 2-Wasserstein distance between data and model distributions when the model is Lipschitz continuous.
+Since Diffusion Transformers (DiTs) are not inherently Lipschitz, the authors introduce targeted architectural modifications and a specialized attention kernel for Jacobian--vector product backward passes.
+TVM achieves:
+\begin{itemize}
+    \item \textbf{1-NFE}: 3.29 FID on ImageNet $256 \times 256$.
+    \item \textbf{4-NFE}: 1.99 FID, establishing a new state of the art for few-step generation.
+\end{itemize}
+
+\subsection{Mean Flows}
+
+\citet{geng2025meanflow} characterize the flow field using the \emph{average velocity}---the integrated velocity from $t$ to $1$---rather than the instantaneous velocity.
+They derive an exact relationship between average and instantaneous velocities and train a neural network to predict the average velocity directly.
+\textbf{MeanFlow} requires no pre-trained teacher, no distillation, and no curriculum:
+\begin{itemize}
+    \item Trained from scratch on ImageNet $256 \times 256$, achieving 3.43 FID with a single NFE.
+    \item Substantially improves over prior one-step methods and narrows the gap with multi-step models.
+\end{itemize}
+
+\subsection{Generative Modeling via Drifting}
+
+\citet{deng2026drifting} propose a novel paradigm where a \emph{drifting field} governs sample movement and reaches equilibrium when the model distribution matches the data distribution.
+Unlike diffusion and flow models that require iterative inference, this approach enables one-step generation by evolving the pushforward distribution \emph{during training}.
+The method achieves 1.54 FID in latent space on ImageNet $256 \times 256$, demonstrating that the boundary between ``diffusion'' and ``one-step'' models is rapidly dissolving.
+
+\subsection{Summary of Few-Step Methods}
+
+\begin{table}[h]
+\centering
+\caption{Comparison of few-step generation methods on ImageNet $256 \times 256$.}
+\label{tab:fewstep}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Method} & \textbf{NFE} & \textbf{FID $\downarrow$} & \textbf{Key Idea} \\
+\midrule
+Consistency Models & 1 & 3.55 & ODE trajectory consistency \\
+MeanFlow & 1 & 3.43 & Average velocity prediction \\
+TVM & 1 & 3.29 & Endpoint regularization \\
+Drifting & 1 & 1.54$^*$ & Pushforward evolution \\
+TVM & 4 & 1.99 & Endpoint regularization \\
+\bottomrule
+\multicolumn{4}{l}{\footnotesize $^*$Latent space; not directly comparable to pixel-space FIDs.}
+\end{tabular}
+\end{table}
+
+% ==================================================================
+\section{Inference-Time Steering and Search}
+\label{sec:steering}
+
+A complementary approach to RL fine-tuning is to steer a \emph{frozen} model at inference time.
+This avoids retraining costs and preserves the base model's diversity, but requires clever use of compute during generation.
+
+\subsection{Feynman--Kac Steering}
+\label{sec:fk}
+
+\paragraph{Problem.}
+Given a pre-trained diffusion model $p_\theta(\mathbf{x}_0 | c)$ and a reward function $r(\mathbf{x}_0, c)$, we want to sample from the \emph{reward-tilted} distribution
+\begin{equation}
+    p_{\mathrm{target}}(\mathbf{x}_0 | c) = \frac{1}{Z}\, p_\theta(\mathbf{x}_0 | c)\, \exp\bigl(\lambda\, r(\mathbf{x}_0, c)\bigr),
+    \label{eq:tilted}
+\end{equation}
+which upweights high-reward samples while staying close to the base model.
+Fine-tuning methods (\Cref{sec:rl}) modify $\theta$ to approximate this target; steering instead solves the sampling problem \emph{directly at inference time}, leaving $\theta$ frozen.
+
+\paragraph{Approach.}
+\citet{singhal2025fksteering} cast this as a \textbf{Feynman--Kac model} over the reverse diffusion trajectory $(\mathbf{x}_T, \mathbf{x}_{T-1}, \ldots, \mathbf{x}_0)$.
+They introduce \emph{potential functions} $G_t(\mathbf{x}_t)$ at intermediate timesteps that collectively reconstruct the terminal reward:
+\begin{equation}
+    \prod_{t=T}^{0} G_t(\mathbf{x}_T, \ldots, \mathbf{x}_t) = \exp\bigl(\lambda\, r(\mathbf{x}_0, c)\bigr).
+\end{equation}
+The algorithm runs $k$ \emph{particles} (parallel diffusion trajectories) and applies sequential Monte Carlo (SMC):
+\begin{enumerate}
+    \item \textbf{Propose}: advance each particle one denoising step using the base model.
+    \item \textbf{Score}: evaluate the potential $G_t$ for each particle.
+    \item \textbf{Resample}: multinomial resampling---particles with high potential scores are duplicated, low-scoring ones are eliminated.
+\end{enumerate}
+This is strictly more powerful than Best-of-$N$, which only selects at the \emph{end}: FK steering prunes bad trajectories \emph{early}, focusing compute on promising regions of sample space.
+
+\paragraph{Potential design.}
+The choice of $G_t$ determines the quality--variance trade-off. Three designs are explored:
+\begin{itemize}
+    \item \textbf{Difference}: $G_t = \exp\bigl(\lambda[r_\phi(\mathbf{x}_t) - r_\phi(\mathbf{x}_{t+1})]\bigr)$---rewards particles whose intermediate scores are \emph{increasing}.
+    \item \textbf{Max}: favors trajectories that reach the highest intermediate reward at any point.
+    \item \textbf{Sum}: accumulates rewards across the trajectory.
+\end{itemize}
+Intermediate rewards $r_\phi(\mathbf{x}_t, c)$ can be computed by evaluating an off-the-shelf reward on the predicted clean sample $\hat{\mathbf{x}}_0(\mathbf{x}_t)$, or by training a dedicated model.
+
+\paragraph{Theoretical guarantee.}
+As $k \to \infty$, the empirical particle distribution converges to $p_{\mathrm{target}}$ for \emph{any} valid potential decomposition---the estimator is \textbf{consistent}.
+
+\paragraph{Key results.}
+\begin{itemize}
+    \item \emph{Text-to-image} (GenEval benchmark): Stable Diffusion v2.1 with $k\!=\!4$ particles outperforms the $3\times$ larger SDXL-DPO fine-tuned model on prompt fidelity. A 0.8B steered model beats a 2.6B fine-tuned model.
+    \item \emph{Text diffusion}: gradient-free control of toxicity (0.3\% baseline $\to$ 64.7\% with $k\!=\!8$) and improved linguistic acceptability.
+    \item Steering \emph{stacks} with fine-tuning: applying FK steering to an already fine-tuned SDXL-DPO model further improves GenEval from 0.58 to 0.65.
+    \item Computational cost is lower than fine-tuning despite multi-particle sampling, since no backward passes or gradient updates are needed.
+\end{itemize}
+This connects diffusion steering to the broader theme of \emph{inference-time scaling} in language models \citep{snell2024scaling}, suggesting a unified compute-optimal perspective: at some point, spending more compute at inference time yields better returns than spending it on training.
+
+\subsection{Meta Flow Maps for Steering and Alignment}
+\label{sec:mfm}
+
+\citet{potaptchik2026meta} introduce \textbf{Meta Flow Maps} (MFMs), extending consistency models into the stochastic domain.
+MFMs perform stochastic one-step posterior sampling: from any intermediate noisy state $\mathbf{x}_t$, they generate multiple independent clean-data estimates via a single forward pass.
+These estimates enable:
+\begin{enumerate}
+    \item \textbf{Inference-time steering} without inner rollouts---value functions are estimated by averaging rewards over the one-step samples.
+    \item \textbf{Unbiased off-policy fine-tuning}---the differentiable reparameterization trick allows gradient-based reward optimization without on-policy trajectory simulation.
+\end{enumerate}
+Empirically, the steered MFM sampler outperforms a Best-of-1000 baseline on ImageNet across multiple reward metrics at a fraction of the compute.
+MFMs thus bridge the gap between distillation (\Cref{sec:distillation}) and steering, showing that few-step models are not just faster---they also enable qualitatively new control mechanisms.
+
+\subsection{Compositional Diffusion with Guided Search}
+
+\citet{mishra2026cdgs} address long-horizon planning, where compositional diffusion models must combine local sub-task distributions.
+When these local distributions are multimodal, naive composition averages incompatible modes, producing infeasible plans.
+\textbf{CDGS} integrates \emph{search within the denoising process}:
+\begin{itemize}
+    \item Population-based sampling explores diverse local mode combinations.
+    \item Likelihood-based filtering eliminates infeasible candidates.
+    \item Iterative resampling across overlapping segments maintains global consistency.
+\end{itemize}
+Demonstrated on seven robot manipulation tasks, CDGS also extends to text-guided panoramic image generation and long video synthesis.
+This highlights a broader principle: \emph{search and diffusion are complementary}, with search resolving the combinatorial structure that pure denoising cannot.
+
+% ==================================================================
+\section{Applications and Extensions}
+\label{sec:applications}
+
+\subsection{Diffusion Models for Robotic Planning}
+
+Diffusion models have emerged as powerful trajectory planners in robotics \citep{janner2022planning,chi2023diffusion}.
+The key insight is that a diffusion model can represent multi-modal trajectory distributions, capturing diverse strategies for reaching a goal.
+RL fine-tuning (\Cref{sec:rl}) and inference-time steering (\Cref{sec:steering}) both apply naturally: the ``reward'' becomes task success or constraint satisfaction, and the compositional structure of CDGS \citep{mishra2026cdgs} addresses the horizon-scaling challenge.
+
+\subsection{Non-Euclidean Domains}
+
+Many scientific applications require generation on non-Euclidean spaces: molecular conformations on $\mathrm{SO}(3)$, climate data on the sphere $S^2$, phylogenetic trees in hyperbolic space.
+Generalised Flow Maps \citep{davis2025gfm} extend the distillation toolkit to these settings, while Riemannian score-based models \citep{debortoli2022riemannian} provide the diffusion backbone.
+The combination of manifold diffusion with RL and steering remains largely unexplored.
+
+\subsection{Connections to Stochastic Optimal Control}
+
+The RL objective in \Cref{eq:rl_objective} can be reformulated as a stochastic optimal control problem over the reverse SDE \citep{uehara2024finetuning,berner2022optimal}.
+The value function satisfies a Hamilton--Jacobi--Bellman (HJB) equation, and the optimal policy tilts the score function by the log-value gradient.
+This perspective unifies RL fine-tuning, classifier guidance, and SMC steering as different approximations to the same controlled diffusion.
+
+% ==================================================================
+\section{Research Directions: Linear Activation Steering for Diffusion}
+\label{sec:lasd}
+
+The preceding sections reveal a gap in the cost--capability landscape of diffusion steering.
+RL fine-tuning modifies weights (expensive, permanent).
+Feynman--Kac steering requires $k\times$ inference compute (training-free, but costly per generation).
+Classifier guidance needs a backward pass per step; CFG doubles the forward passes.
+No existing method offers \emph{zero-overhead, training-free, composable} steering of diffusion models.
+
+We propose \textbf{Linear Activation Steering for Diffusion (LASD)}, inspired by the recent discovery that semantic concepts are encoded as linear directions in the residual stream of large transformers \citep{beaglehole2026universal}.
+The core idea: extract concept vectors from Diffusion Transformer (DiT) activations using Recursive Feature Machines and steer by vector addition during denoising.
+
+\subsection{Background: Activation Steering in LLMs}
+
+\citet{beaglehole2026universal} demonstrated that for LLMs and VLMs, a concept $\mathcal{C}$ (e.g., ``truthfulness,'' ``formality'') corresponds to a linear direction $\mathbf{v}_\ell \in \mathbb{R}^D$ at each layer $\ell$.
+Steering is achieved by modifying activations:
+\begin{equation}
+    \tilde{\mathbf{A}}_{\ell,i} = \mathbf{A}_{\ell,i} + \varepsilon\, \mathbf{v}_\ell, \quad \forall \text{ token positions } i,
+    \label{eq:llm_steering}
+\end{equation}
+at \emph{zero} additional inference cost (just vector addition).
+The concept vectors are extracted via the \textbf{Average Gradient Outer Product (AGOP)} of a kernel ridge regression model trained on (activation, concept-label) pairs: the leading eigenvector of $\mathbf{M}_{\mathrm{AGOP}} = \frac{1}{M}\sum_i \nabla \hat{f}(\mathbf{a}^{(i)})\nabla \hat{f}(\mathbf{a}^{(i)})^\top$ captures the direction of maximal concept variation.
+Across 512 concepts on models from Llama-8B to DeepSeek-R1, this achieves 69.1\% steerability, with linear composability ($\mathbf{v} = \sum_k \varepsilon_k \mathbf{v}^{(k)}$) and cross-language transfer.
+
+\paragraph{Prior art in diffusion activation editing.}
+The idea of manipulating diffusion model activations is not new.
+\citet{kwon2023diffusion} showed that the bottleneck activations of a U-Net diffusion model (the ``h-space'') encode semantic concepts, and that linear arithmetic $\mathbf{h} + \alpha\,\Delta\mathbf{h}$ steers generation.
+\citet{gandikota2023concept} found low-rank concept directions in \emph{weight space} via LoRA (Concept Sliders), and \citet{epstein2023selfguidance} used internal attention maps for spatial control (Self-Guidance).
+LASD differs from these works in three respects:
+(i) it targets the \textbf{DiT architecture} (not U-Nets), which is now the dominant backbone;
+(ii) it uses a \textbf{systematic, scalable extraction pipeline} (RFM/AGOP) rather than manual direction finding;
+(iii) it explicitly addresses the \textbf{timestep-dependence problem} unique to iterative denoising.
+Nevertheless, the contribution is primarily \emph{empirical}---the central bet is whether DiT activations exhibit the same linear concept geometry found in LLMs.
+
+\subsection{Proposed Method}
+
+Let $f_\theta$ be a pre-trained DiT with $L$ layers.
+At denoising step $t$ and layer $\ell$, the model computes activations $\mathbf{A}_\ell^{(t)} \in \mathbb{R}^{N \times D}$, where $N$ is the number of spatial tokens (patches) and $D$ the hidden dimension.
+LASD steers by:
+\begin{equation}
+    \tilde{\mathbf{A}}_\ell^{(t)} = \mathbf{A}_\ell^{(t)} + \varepsilon(t)\, \mathbf{v}_\ell^{(t)}\, \mathbf{1}_N^\top,
+    \label{eq:lasd}
+\end{equation}
+where $\mathbf{v}_\ell^{(t)} \in \mathbb{R}^D$ is the concept vector at layer $\ell$ and timestep $t$, $\varepsilon(t)$ is a timestep-dependent steering strength, and $\mathbf{1}_N^\top$ broadcasts across all spatial positions (uniform steering for global concepts).
+
+\paragraph{Concept vector extraction.}
+Generate $M$ images from diverse prompts, label each with a concept score $y^{(i)}_\mathcal{C}$ (from a reward model or classifier applied to the \emph{final} image $\mathbf{x}_0$), and record spatially-pooled activations $\mathbf{a}_{\ell,t}^{(i)} = \mathrm{MeanPool}(\mathbf{A}_\ell^{(t)}(\mathbf{x}_t^{(i)}, \mathbf{c}^{(i)})) \in \mathbb{R}^D$.
+Apply the RFM pipeline (kernel ridge regression $\to$ AGOP $\to$ leading eigenvector) to the dataset $\{(\mathbf{a}_{\ell,t}^{(i)}, y^{(i)}_\mathcal{C})\}_{i=1}^M$ to obtain $\mathbf{v}_{\ell,t}$.
+
+\paragraph{A note on credit assignment.}
+A subtlety: concept labels are defined on $\mathbf{x}_0$ (the final image), but activations are recorded at intermediate steps $t > 0$.
+This is analogous to terminal-reward RL---the RFM extracts the direction in activation space that is most predictive of the eventual outcome, effectively learning which intermediate representations ``commit'' to the concept.
+
+\subsection{The Timestep Challenge}
+\label{sec:timestep}
+
+This is the central technical question and potential failure point.
+In an LLM, the same network processes all tokens in a single forward pass; the residual stream at layer $\ell$ lives in a consistent representational space.
+In a diffusion model, the same network is called $T$ times with dramatically different inputs: pure noise at $t = T$, a near-clean image at $t \approx 0$.
+The activation manifold shifts continuously with $t$, and a concept direction extracted at one timestep may be meaningless at another.
+
+\paragraph{Diagnostic.}
+Before any steering experiments, we propose measuring the \textbf{temporal stability} of concept directions:
+\begin{equation}
+    S(\mathcal{C}, \ell) = \frac{1}{|\mathcal{T}|^2} \sum_{t_1, t_2 \in \mathcal{T}} \cos\bigl(\mathbf{v}_\ell^{(t_1)},\; \mathbf{v}_\ell^{(t_2)}\bigr),
+    \label{eq:stability}
+\end{equation}
+where $\mathcal{T}$ is a set of sampled timesteps.
+If $S \approx 1$, the concept direction is stable and a single time-independent vector suffices.
+If $S \approx 0$, the direction rotates across timesteps and per-timestep vectors are necessary.
+
+\paragraph{Three strategies.}
+\begin{enumerate}
+    \item[\textbf{A.}] \textbf{Shared vector, adaptive scaling.} A single $\mathbf{v}_\ell$ extracted from activations pooled across all $t$, with $\varepsilon(t) = \varepsilon_0 \cdot \sigma(t)^{-\alpha}$ (steer more at low noise, less at high noise). Simplest; serves as baseline.
+    \item[\textbf{B.}] \textbf{Time-binned vectors.} Partition the denoising trajectory into $B$ bins (e.g., $B = 4$). Extract a separate $\mathbf{v}_\ell^{(b)}$ per bin. Captures the intuition that coarse layout planning ($t$ large) and fine detail refinement ($t$ small) may encode concepts differently.
+    \item[\textbf{C.}] \textbf{Continuous interpolation.} Smooth interpolation between bin vectors via Gaussian-weighted averaging: $\mathbf{v}_\ell(t) = \sum_b w_b(t)\, \mathbf{v}_\ell^{(b)}$, avoiding discontinuities at bin boundaries.
+\end{enumerate}
+A possible saving grace: DiTs receive the timestep via adaptive LayerNorm (adaLN), which modulates activations based on $t$.
+It is \emph{possible} that the concept directions are approximately stable in the adaLN-modulated space, making Strategy A viable.
+This is an empirical question.
+
+\subsection{Theoretical Limitations}
+
+Unlike FK steering, which is asymptotically consistent (the particle distribution converges to $p_{\mathrm{target}}$ as $k \to \infty$), LASD has \textbf{no guarantee} that the perturbed denoising trajectory samples from a well-defined target distribution.
+Adding $\varepsilon\,\mathbf{v}$ to activations modifies the effective velocity field:
+\begin{equation}
+    v_{\mathrm{steered}}(\mathbf{x}_t, t) \neq v_\theta(\mathbf{x}_t, t) + \varepsilon \cdot (\text{something simple}),
+\end{equation}
+because the perturbation propagates nonlinearly through subsequent layers and denoising steps.
+The resulting distribution may not correspond to any reward-tilted version of the base model.
+At large $\varepsilon$, the trajectory may leave the data manifold entirely, producing artifacts.
+
+This is a fundamental limitation relative to FK steering.
+However, the same limitation applies to classifier-free guidance (CFG), which also lacks a rigorous distributional guarantee yet is universally deployed.
+The practical question is whether LASD's reward--quality trade-off is favorable, not whether it has an asymptotic theorem.
+
+\subsection{Proposed Experiments}
+
+We outline a staged experimental plan, with clear go/no-go criteria at each stage.
+
+\paragraph{Stage 0: Linearity probing (prerequisite).}
+Generate 10,000 images with concept labels.
+Record activations at all (layer, timestep) pairs.
+Train RFM probes and report classification accuracy as a function of $\ell$ and $t$.
+Compare to nonlinear probes (MLP) to quantify the linearity gap.
+\textbf{Go/no-go}: if RFM probe accuracy is near chance, the project pivots to a DiT representation analysis paper.
+
+\paragraph{Stage 1: Temporal stability.}
+Compute the stability metric $S(\mathcal{C}, \ell)$ (\Cref{eq:stability}) for each concept and layer.
+Determine whether Strategy A, B, or C is needed.
+
+\paragraph{Stage 2: Steering evaluation.}
+Apply LASD to DiT-XL/2 (class-conditional, ImageNet) and Stable Diffusion 3 (text-to-image).
+Evaluate against baselines: CFG, classifier guidance, FK steering ($k = 4, 8$), Concept Sliders, h-space editing adapted to DiT, and a simple mean-difference vector (ablation of the RFM extraction).
+Metrics: concept accuracy (reward model), FID (quality preservation), LPIPS diversity, and wall-clock cost ratio.
+
+\paragraph{Stage 3: Composability and scaling.}
+Test multi-concept steering ($\mathbf{v} = \sum_k \varepsilon_k \mathbf{v}^{(k)}$) for 2--3 simultaneous concepts.
+Measure orthogonality of concept vectors and interference effects.
+If resources permit, test on Flux-12B where FK steering ($k = 8$) would be prohibitively expensive.
+
+\paragraph{Stage 4: Ablations.}
+Steering strength sweep ($\varepsilon$), layer selection (single layer vs.\ all vs.\ middle-only), spatial mode (uniform vs.\ attention-weighted), number of RFM training samples, and RFM vs.\ simpler extraction methods (PCA, mean-difference, logistic regression).
+
+\subsection{Expected Outcomes and Fallbacks}
+
+\paragraph{Strong success.}
+LASD achieves concept accuracy within 10\% of FK steering ($k = 4$) at $1.0\times$ inference cost, with FID degradation under 5\%, across $\geq$50\% of tested concepts.
+Multi-concept composition works cleanly.
+
+\paragraph{Moderate success.}
+LASD works for global concepts (style, aesthetics) but fails for fine-grained or spatially localized concepts.
+Still valuable as a cheap first-pass method---potentially combinable with FK steering (use LASD to bias all $k$ particles, then resample, achieving FK-quality results with $k = 2$ instead of $k = 8$).
+
+\paragraph{Minimum publishable result.}
+Clear evidence that DiT activations encode concepts linearly, with a spatiotemporal atlas of concept geometry across layers and timesteps.
+This representation analysis would be independently valuable for diffusion model interpretability, even if steering effectiveness is limited.
+
+\paragraph{Failure mode.}
+If DiT activations lack linear concept structure (low RFM probe accuracy), the entire approach fails at a foundational level.
+The fallback is a mechanistic interpretability study: where and when do DiTs encode semantic information, and why is the geometry different from LLMs?
+
+% ==================================================================
+\section{Discussion and Open Problems}
+\label{sec:discussion}
+
+\subsection{Theoretical Unification of RL, Distillation, and Steering}
+
+A recurring theme is the convergence of these three threads.
+DiffusionNFT \citep{zheng2025diffusionnft} performs RL through the forward (flow-matching) process rather than the reverse chain.
+Meta Flow Maps \citep{potaptchik2026meta} use distilled one-step models to enable both steering and off-policy RL.
+Feynman--Kac steering \citep{singhal2025fksteering} replaces gradient-based RL with SMC reweighting.
+All three optimize variants of the same KL-regularized reward objective (\Cref{eq:tilted}), but through fundamentally different mechanisms---policy gradients on the reverse chain, supervised learning on the forward process, and importance-weighted sampling at test time.
+A unified theoretical framework---likely grounded in stochastic optimal control and the HJB equation---that characterizes \emph{when to use which} (as a function of reward structure, compute budget, and alignment precision) remains absent.
+
+\subsection{Inference-Time Compute Scaling Laws}
+
+Language models exhibit clear scaling laws: more chain-of-thought tokens or search budget yields predictable reasoning improvements \citep{snell2024scaling}.
+For diffusion models, Feynman--Kac steering and CDGS demonstrate that more particles and search yield better alignment, but there is no analogue of ``scaling laws.''
+Key unanswered questions include:
+\begin{itemize}
+    \item How does reward improvement scale with the number of particles $k$? The SMC consistency guarantee is asymptotic ($k \to \infty$); finite-sample behavior is poorly characterized.
+    \item What is the optimal allocation between particles, resampling frequency, and denoising steps for a fixed compute budget?
+    \item When is it more efficient to steer at inference time vs.\ fine-tune with RL? The crossover point likely depends on how many generations are needed and how far the target is from the base distribution.
+\end{itemize}
+
+\subsection{One-Step Generation: What Do You Lose?}
+
+MeanFlow, TVM, and Drifting have brought one-step FIDs close to multi-step baselines (\Cref{tab:fewstep}).
+However, FID measures aggregate distributional similarity and is insensitive to mode dropping, tail coverage, and out-of-distribution robustness.
+Compressing a 100-step iterative refinement into a single function evaluation necessarily discards the ``self-correcting'' nature of the denoising process.
+Open questions:
+\begin{itemize}
+    \item Do one-step models lose rare modes? Systematic studies of mode coverage (e.g., via recall metrics or coverage on long-tail categories) are lacking.
+    \item How do one-step models interact with steering? FK steering relies on intermediate states for resampling; a one-step model has no intermediates. MFMs partially address this by providing stochastic one-step posterior samples, but the trade-off between speed and steerability is unclear.
+\end{itemize}
+
+\subsection{Online RL with Diffusion Policies}
+
+The vast majority of diffusion+RL work is \emph{offline}: the diffusion model is trained on a fixed dataset and fine-tuned without further environment interaction.
+Online RL with diffusion policies faces two barriers:
+\begin{itemize}
+    \item \textbf{Latency.} Multi-step sampling is too slow for real-time control loops. One-step distillation could unlock online deployment, but this has not been demonstrated at scale in closed-loop settings.
+    \item \textbf{Exploration.} Diffusion policies naturally represent multi-modal action distributions, which should help exploration, but how to leverage this structure (e.g., Thompson sampling via the stochastic denoising process) is poorly understood.
+\end{itemize}
+
+\subsection{Multi-Objective and Constrained Alignment}
+
+Current RL fine-tuning optimizes a single scalar reward.
+Real applications require Pareto-optimal trade-offs: image quality vs.\ safety vs.\ diversity, or drug efficacy vs.\ synthesizability vs.\ toxicity.
+Constrained diffusion RL (DiffCPS, safe offline RL) and multi-objective formulations are nascent.
+Inference-time steering could be particularly natural for multi-objective control---different potential functions for different objectives---but this has not been explored.
+
+\subsection{Reward Hacking and the Alignment Tax}
+
+RL fine-tuning risks \emph{reward hacking}---optimizing a proxy reward at the expense of true quality.
+The KL penalty in \Cref{eq:rl_objective} mitigates this, but calibrating $\beta$ is non-trivial: too small and the model over-optimizes the proxy; too large and it barely moves from the base distribution.
+Inference-time steering may be more robust since it does not modify model weights and can be ``turned off,'' but it incurs an ``alignment tax'' in the form of additional sampling compute at every generation.
+Understanding the robustness--efficiency frontier across methods is an open problem.
+
+\subsection{Beyond Images: Video, 3D, and Science}
+
+Most current work focuses on image generation.
+Extending RL fine-tuning and steering to video diffusion models (orders of magnitude more dimensions), 3D generation (geometric constraints), and scientific domains (molecules on $\mathrm{SO}(3)$, climate on $S^2$) presents significant challenges:
+\begin{itemize}
+    \item \textbf{Reward design.} Image rewards (CLIP, aesthetic scores) are mature; video and 3D rewards are noisy and expensive.
+    \item \textbf{Particle methods at scale.} FK steering with $k$ particles on a video model means $k\times$ the memory and compute of an already expensive generation.
+    \item \textbf{Manifold RL.} GFMs \citep{davis2025gfm} provide distillation on manifolds, but combining manifold diffusion with RL fine-tuning or steering is essentially untouched.
+\end{itemize}
+
+\subsection{Diffusion as Policy vs.\ Diffusion as Planner}
+
+Using a diffusion model as a \emph{policy} (output a single action $\mathbf{a}_t$ given state $\mathbf{s}_t$) vs.\ as a \emph{planner} (output a full trajectory $(\mathbf{s}_0, \mathbf{a}_0, \ldots, \mathbf{s}_H, \mathbf{a}_H)$) yields very different computational and representational trade-offs.
+Policies are fast at test time but myopic; planners capture long-horizon structure but scale poorly with horizon length.
+Hierarchical approaches (plan at a coarse level, execute with a policy) are a natural compromise, but principled ways to decompose the problem---and how RL fine-tuning should differ across levels---remain open.
+
+% ==================================================================
+\section*{Acknowledgments}
+
+We thank Ricky Chen, Stefano Ermon, Qiang Liu, Masatoshi Uehara, Nicholas Boffi, and Michael Albergo for valuable discussions and for making their work publicly available.
+
+% ==================================================================
+\bibliographystyle{plainnat}
+\begin{thebibliography}{99}
+
+\bibitem[Beaglehole et~al.(2026)]{beaglehole2026universal}
+Beaglehole, D., Radhakrishnan, A., Boix-Adser\`{a}, E., and Belkin, M.
+\newblock Toward universal steering and monitoring of {AI} models.
+\newblock \emph{Science}, 391(6787):787--792, 2026.
+
+\bibitem[Epstein et~al.(2023)]{epstein2023selfguidance}
+Epstein, D., Jabri, A., Poole, B., Efros, A.~A., and Holynski, A.
+\newblock Diffusion self-guidance for controllable image generation.
+\newblock \emph{NeurIPS}, 2023.
+
+\bibitem[Gandikota et~al.(2023)]{gandikota2023concept}
+Gandikota, R., Orgad, H., Belinkov, Y., Oh, J., and Materzy\'{n}ska, J.
+\newblock Concept sliders: {LoRA} adaptors for precise control in diffusion models.
+\newblock \emph{arXiv:2311.12092}, 2023.
+
+\bibitem[Kwon et~al.(2023)]{kwon2023diffusion}
+Kwon, M., Jeong, J., and Uh, Y.
+\newblock Diffusion models already have a semantic latent space.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Chen et~al.(2018)]{chen2018neuralode}
+Chen, R.~T.~Q., Rubanova, Y., Bettencourt, J., and Duvenaud, D.
+\newblock Neural ordinary differential equations.
+\newblock \emph{NeurIPS}, 2018.
+
+\bibitem[Zhu et~al.(2023)]{zhu2023diffusion}
+Zhu, Z., Zhao, H., He, H., Zhong, Y., Zhang, S., Yu, Y., and Zhang, J.
+\newblock Diffusion models for reinforcement learning: A survey.
+\newblock \emph{arXiv:2311.01223}, 2023.
+
+\bibitem[Albergo et~al.(2023)]{albergo2023building}
+Albergo, M.~S., Boffi, N.~M., and Vanden-Eijnden, E.
+\newblock Building normalizing flows with stochastic interpolants.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Anderson(1982)]{anderson1982reverse}
+Anderson, B.~D.~O.
+\newblock Reverse-time diffusion equation models.
+\newblock \emph{Stochastic Processes and their Applications}, 12(3):313--326, 1982.
+
+\bibitem[Berner et~al.(2022)]{berner2022optimal}
+Berner, J., Richter, L., and Lorenz, K.
+\newblock An optimal control perspective on diffusion-based generative modeling.
+\newblock \emph{TMLR}, 2022.
+
+\bibitem[Black et~al.(2024)]{black2024training}
+Black, K., Janner, M., Du, Y., Kostrikov, I., and Levine, S.
+\newblock Training diffusion models with reinforcement learning.
+\newblock \emph{ICLR}, 2024.
+
+\bibitem[Chi et~al.(2023)]{chi2023diffusion}
+Chi, C., Feng, S., Du, Y., Xu, Z., Cousineau, E., Burchfiel, B., and Song, S.
+\newblock Diffusion policy: Visuomotor policy learning via action diffusion.
+\newblock \emph{RSS}, 2023.
+
+\bibitem[Davis et~al.(2025)]{davis2025gfm}
+Davis, O., Albergo, M.~S., Boffi, N.~M., Bronstein, M.~M., and Bose, A.~J.
+\newblock Generalised flow maps for few-step generative modelling on {R}iemannian manifolds.
+\newblock \emph{arXiv:2510.21608}, 2025.
+
+\bibitem[De~Bortoli et~al.(2022)]{debortoli2022riemannian}
+De~Bortoli, V., Mathieu, E., Hutchinson, M., Thornton, J., Teh, Y.~W., and Doucet, A.
+\newblock Riemannian score-based generative modelling.
+\newblock \emph{NeurIPS}, 2022.
+
+\bibitem[Deng et~al.(2026)]{deng2026drifting}
+Deng, M., Li, H., Li, T., Du, Y., and He, K.
+\newblock Generative modeling via drifting.
+\newblock \emph{arXiv:2602.04770}, 2026.
+
+\bibitem[Dhariwal and Nichol(2021)]{dhariwal2021diffusion}
+Dhariwal, P. and Nichol, A.
+\newblock Diffusion models beat {GAN}s on image synthesis.
+\newblock \emph{NeurIPS}, 2021.
+
+\bibitem[Fan et~al.(2024)]{fan2024reinforcement}
+Fan, Y., Watkins, O., Du, Y., Liu, H., Ryu, M., Boutilier, C., Abbeel, P., Ghavamzadeh, M., Lee, K., and Lee, K.
+\newblock Reinforcement learning for fine-tuning text-to-image diffusion models.
+\newblock \emph{NeurIPS}, 2024.
+
+\bibitem[Geng et~al.(2025)]{geng2025meanflow}
+Geng, Z., Deng, M., Bai, X., Kolter, J.~Z., and He, K.
+\newblock Mean flows for one-step generative modeling.
+\newblock \emph{arXiv:2505.13447}, 2025.
+
+\bibitem[Ho et~al.(2020)]{ho2020denoising}
+Ho, J., Jain, A., and Abbeel, P.
+\newblock Denoising diffusion probabilistic models.
+\newblock \emph{NeurIPS}, 2020.
+
+\bibitem[Janner et~al.(2022)]{janner2022planning}
+Janner, M., Du, Y., Tenenbaum, J.~B., and Levine, S.
+\newblock Planning with diffusion for flexible behavior synthesis.
+\newblock \emph{ICML}, 2022.
+
+\bibitem[Lipman et~al.(2023)]{lipman2023flow}
+Lipman, Y., Chen, R.~T.~Q., Ben-Hamu, H., Nickel, M., and Le, M.
+\newblock Flow matching for generative modeling.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Liu et~al.(2023)]{liu2023flow}
+Liu, X., Gong, C., and Liu, Q.
+\newblock Flow straight and fast: Learning to generate and transfer data with rectified flow.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Mishra et~al.(2026)]{mishra2026cdgs}
+Mishra, U.~A., He, D., Chen, Y., and Xu, D.
+\newblock Compositional diffusion with guided search for long-horizon planning.
+\newblock \emph{arXiv:2601.00126}, 2026.
+
+\bibitem[Potaptchik et~al.(2026)]{potaptchik2026meta}
+Potaptchik, P., Saravanan, A., Mammadov, A., Prat, A., Albergo, M.~S., and Teh, Y.~W.
+\newblock Meta flow maps enable scalable reward alignment.
+\newblock \emph{arXiv:2601.14430}, 2026.
+
+\bibitem[Shao et~al.(2024)]{shao2024deepseekmath}
+Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Zhang, M., Li, Y., Wu, Y., and Guo, D.
+\newblock {DeepSeekMath}: Pushing the limits of mathematical reasoning in open language models.
+\newblock \emph{arXiv:2402.03300}, 2024.
+
+\bibitem[Singhal et~al.(2025)]{singhal2025fksteering}
+Singhal, R., Horvitz, Z., Teehan, R., Ren, M., Yu, Z., McKeown, K., and Ranganath, R.
+\newblock A general framework for inference-time scaling and steering of diffusion models.
+\newblock \emph{arXiv:2501.06848}, 2025.
+
+\bibitem[Snell et~al.(2024)]{snell2024scaling}
+Snell, C., Lee, J., Xu, K., and Kumar, A.
+\newblock Scaling {LLM} test-time compute optimally can be more effective than scaling model parameters.
+\newblock \emph{arXiv:2408.03314}, 2024.
+
+\bibitem[Song et~al.(2021a)]{song2021scorebased}
+Song, Y., Sohl-Dickstein, J., Kingma, D.~P., Kumar, A., Ermon, S., and Poole, B.
+\newblock Score-based generative modeling through stochastic differential equations.
+\newblock \emph{ICLR}, 2021.
+
+\bibitem[Song et~al.(2021b)]{song2021sde}
+Song, Y., Sohl-Dickstein, J., Kingma, D.~P., Kumar, A., Ermon, S., and Poole, B.
+\newblock Score-based generative modeling through stochastic differential equations.
+\newblock \emph{ICLR}, 2021.
+
+\bibitem[Song et~al.(2023)]{song2023consistency}
+Song, Y., Dhariwal, P., Chen, M., and Sutskever, I.
+\newblock Consistency models.
+\newblock \emph{ICML}, 2023.
+
+\bibitem[Uehara et~al.(2024)]{uehara2024finetuning}
+Uehara, M., Zhao, Y., Black, K., Hazan, E., Lee, J.~D., Jiang, N., Wang, Z., Levine, S., and Bietti, A.
+\newblock Fine-tuning of continuous-time diffusion models as entropy-regularized control.
+\newblock \emph{arXiv:2402.15194}, 2024.
+
+\bibitem[Vincent(2011)]{vincent2011connection}
+Vincent, P.
+\newblock A connection between score matching and denoising autoencoders.
+\newblock \emph{Neural Computation}, 23(7):1661--1674, 2011.
+
+\bibitem[Zheng et~al.(2025)]{zheng2025diffusionnft}
+Zheng, K., Chen, H., Ye, H., Wang, H., Zhang, Q., Jiang, K., Su, H., Ermon, S., Zhu, J., and Liu, M.-Y.
+\newblock {DiffusionNFT}: Online diffusion reinforcement with forward process.
+\newblock \emph{arXiv:2509.16117}, 2025.
+
+\bibitem[Zhou et~al.(2025)]{zhou2025tvm}
+Zhou, L., Parger, M., Haque, A., and Song, J.
+\newblock Terminal velocity matching.
+\newblock \emph{arXiv:2511.19797}, 2025.
+
+\end{thebibliography}
+
+\end{document}

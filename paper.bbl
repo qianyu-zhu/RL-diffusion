@@ -1,0 +1,97 @@
+\begin{thebibliography}{14}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Beaglehole et~al.(2024)Beaglehole, Radhakrishnan, Pandit, and
+  Belkin]{beaglehole2024average}
+Daniel Beaglehole, Adityanarayanan Radhakrishnan, Parthe Pandit, and Mikhail
+  Belkin.
+\newblock Average gradient outer product as a mechanism for deep neural
+  collapse.
+\newblock \emph{arXiv preprint arXiv:2212.14855}, 2024.
+
+\bibitem[Haas et~al.(2023)Haas, Burnett, Davies, Montague, and
+  Bau]{haas2023discovering}
+Ren\'{e} Haas, Inbar Burnett, Jaime~Gonzalez Davies, David Montague, and David
+  Bau.
+\newblock Discovering interpretable directions in the semantic latent space of
+  diffusion models.
+\newblock \emph{arXiv preprint arXiv:2303.11073}, 2023.
+
+\bibitem[Ho and Salimans(2022)]{ho2022classifier}
+Jonathan Ho and Tim Salimans.
+\newblock Classifier-free diffusion guidance.
+\newblock \emph{NeurIPS Workshop on Deep Generative Models and Downstream
+  Applications}, 2022.
+
+\bibitem[Kramar et~al.(2025)]{kramar2025controlling}
+Janos Kramar et~al.
+\newblock Controlling language and diffusion models by transporting
+  activations.
+\newblock In \emph{ICLR (Spotlight)}, 2025.
+
+\bibitem[Kwon et~al.(2023)Kwon, Jeong, and Uh]{kwon2023diffusion}
+Mingi Kwon, Jaeseok Jeong, and Youngjung Uh.
+\newblock Diffusion models already have a semantic latent space.
+\newblock In \emph{ICLR}, 2023.
+
+\bibitem[Li et~al.(2024)Li, Shen, Torr, Tresp, and Gu]{li2024self}
+Hang Li, Chengzhi Shen, Philip Torr, Volker Tresp, and Jindong Gu.
+\newblock Self-discovering interpretable diffusion latent directions for
+  responsible text-to-image generation.
+\newblock In \emph{CVPR}, 2024.
+
+\bibitem[Marks and Tegmark(2024)]{marks2024geometry}
+Samuel Marks and Max Tegmark.
+\newblock The geometry of truth: Emergent linear structure in large language
+  model representations of true/false statements.
+\newblock \emph{COLM}, 2024.
+
+\bibitem[Peebles and Xie(2023)]{peebles2023scalable}
+William Peebles and Saining Xie.
+\newblock Scalable diffusion models with transformers.
+\newblock In \emph{ICCV}, 2023.
+
+\bibitem[Phillips et~al.(2025)]{phillips2025general}
+Aram-Alexandre Phillips et~al.
+\newblock A general framework for inference-time scaling and steering of
+  diffusion models.
+\newblock \emph{ICML}, 2025.
+
+\bibitem[Radhakrishnan et~al.(2024)Radhakrishnan, Beaglehole, Pandit, and
+  Belkin]{radhakrishnan2024mechanism}
+Adityanarayanan Radhakrishnan, Daniel Beaglehole, Parthe Pandit, and Mikhail
+  Belkin.
+\newblock Mechanism of feature learning in deep fully connected networks and
+  kernel machines that recursively learn features.
+\newblock \emph{Science}, 2024.
+
+\bibitem[Ren et~al.(2026)Ren, Gao, Ying, Rotskoff, and Han]{ren2026driftlite}
+Yinuo Ren, Wenhao Gao, Lexing Ying, Grant~M. Rotskoff, and Jiequn Han.
+\newblock Driftlite: Lightweight drift control for inference-time scaling of
+  diffusion models.
+\newblock \emph{ICLR}, 2026.
+
+\bibitem[Turner et~al.(2023)Turner, Thiergart, Udell, Leech, Mini, and
+  Balwit]{turner2023activation}
+Alexander Turner, Lisa Thiergart, David Udell, Gavin Leech, Ulisse Mini, and
+  Adrienne Balwit.
+\newblock Activation addition: Steering language models without optimization.
+\newblock \emph{arXiv preprint arXiv:2308.10248}, 2023.
+
+\bibitem[Wang et~al.(2026)Wang, Belkin, and Wang]{wang2026general}
+Qingsong Wang, Mikhail Belkin, and Yusu Wang.
+\newblock General and efficient steering of unconditional diffusion.
+\newblock \emph{arXiv preprint arXiv:2602.11395}, 2026.
+
+\bibitem[Zou et~al.(2023)Zou, Phan, Chen, Campbell, Guo, Ren, Pan, Yin,
+  Mazeika, Dombrowski, et~al.]{zou2023representation}
+Andy Zou, Long Phan, Sarah Chen, James Campbell, Phillip Guo, Richard Ren,
+  Alexander Pan, Xuwang Yin, Mantas Mazeika, Ann-Kathrin Dombrowski, et~al.
+\newblock Representation engineering: A top-down approach to ai transparency.
+\newblock \emph{arXiv preprint arXiv:2310.01405}, 2023.
+
+\end{thebibliography}

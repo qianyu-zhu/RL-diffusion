@@ -1,0 +1,835 @@
+\documentclass[11pt]{article}
+
+% ---------- packages ----------
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+\hypersetup{colorlinks=true,linkcolor=blue!60!black,citecolor=green!50!black,urlcolor=blue!70!black}
+
+\title{Linear Activation Steering for Diffusion Transformers:\\Zero-Cost Concept Control via Recursive Feature Machines}
+\author{}
+\date{\today}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\ba}{\mathbf{a}}
+\newcommand{\bv}{\mathbf{v}}
+\newcommand{\bA}{\mathbf{A}}
+\newcommand{\bM}{\mathbf{M}}
+\newcommand{\bW}{\mathbf{W}}
+\newcommand{\bc}{\mathbf{c}}
+
+% ------------------------------------------------------------------
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Steering diffusion models toward desired attributes---aesthetic quality, safety, stylistic consistency---currently requires either retraining (RL fine-tuning, LoRA adapters) or multiplicative inference cost (particle-based methods, classifier guidance).
+We propose \textbf{Linear Activation Steering for Diffusion (LASD)}, which extracts linear concept directions from Diffusion Transformer (DiT) activations using Recursive Feature Machines (RFMs) and steers generation by adding these directions to the residual stream during denoising---at zero additional inference cost.
+Drawing on the Neural Feature Ansatz \citep{radhakrishnan2024mechanism} and the recent demonstration that concept geometry is linear across transformer architectures \citep{beaglehole2026universal}, we hypothesize that DiT intermediate representations encode semantic concepts as linear subspaces recoverable via the Average Gradient Outer Product (AGOP).
+We address the unique challenges of iterative denoising---timestep-dependent representations, spatial activation structure, and noise-schedule coupling---and design a staged experimental plan with explicit go/no-go criteria.
+Existing evidence from h-space editing \citep{kwon2023diffusion}, unsupervised PCA discovery \citep{haas2023discovering}, and DiT linear probing \citep{conceptattention2025} suggests that diffusion activations are indeed approximately linear and low-rank, making the proposed approach viable.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ==================================================================
+\section{Introduction}
+\label{sec:intro}
+
+\subsection{The Control Problem}
+
+Diffusion models and flow-matching models have become the dominant paradigm for high-fidelity image generation \citep{ho2020denoising,song2021scorebased,lipman2023flow}.
+Yet deployment demands \emph{control}: generating images that satisfy downstream objectives such as aesthetic quality, brand consistency, safety compliance, or scientific constraints.
+The central question is how to exert that control \emph{cheaply}.
+
+\subsection{The Cost Landscape}
+
+Existing steering methods form a clear hierarchy (\Cref{tab:cost}):
+
+\begin{table}[h]
+\centering
+\caption{Cost landscape of diffusion steering methods. LASD fills the empty cell: zero-overhead, training-free, composable.}
+\label{tab:cost}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{Modifies weights} & \textbf{Extra inference cost} & \textbf{Per-concept cost} & \textbf{Composable} \\
+\midrule
+RL fine-tuning (DDPO) & Yes & None & Full training run & No \\
+Concept Sliders (LoRA) & Yes & None & LoRA training & Limited \\
+FK steering (SMC) & No & $k\times$ forward & None & Yes \\
+Classifier guidance & No & Backward/step & Classifier training & Limited \\
+CFG & No & $2\times$ forward & None & No \\
+Activation Transport & No & OT solve/step & Direction extraction & Limited \\
+\midrule
+\textbf{LASD (proposed)} & \textbf{No} & \textbf{None} & \textbf{RFM (one-time)} & \textbf{Yes} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+No existing method offers \emph{zero-overhead, training-free, composable} steering.
+Feynman--Kac (FK) steering \citep{singhal2025fksteering} is the state of the art for training-free control---a 0.8B steered model beats a 2.6B fine-tuned model---but requires $k$ parallel particle trajectories, multiplying compute by $k$.
+Classifier-free guidance (CFG) doubles forward passes.
+Concept Sliders \citep{gandikota2023concept} require per-concept LoRA training.
+
+\subsection{The Key Insight: AGOP and the Neural Feature Ansatz}
+
+The \textbf{Neural Feature Ansatz (NFA)} \citep{radhakrishnan2024mechanism} provides the theoretical foundation for our approach.
+Radhakrishnan et al.\ showed that in trained neural networks, the feature matrix at each layer is proportional to the \textbf{Average Gradient Outer Product (AGOP)}:
+\begin{equation}
+    \bW_\ell^\top \bW_\ell \;\propto\; \bM_{\mathrm{AGOP}}^{(\ell)} \;=\; \frac{1}{n}\sum_{i=1}^{n} \nabla_{\ba_\ell} f(\ba_\ell^{(i)})\, \nabla_{\ba_\ell} f(\ba_\ell^{(i)})^\top,
+    \label{eq:nfa}
+\end{equation}
+where $\ba_\ell^{(i)}$ is the input to layer $\ell$ for sample $i$.
+This was validated across architectures: vision transformers, VGG, ResNets, GPT-2, MLPs, and RNNs, with cosine similarity between NFA and AGOP approaching 1.0 after training \citep{radhakrishnan2024mechanism}.
+The \textbf{Convolutional Neural Feature Ansatz} extends this to CNNs via patch-level AGOP \citep{beaglehole2023cnn}.
+
+Building on this, \textbf{Recursive Feature Machines (RFMs)} \citep{radhakrishnan2024mechanism} provide a backpropagation-free method for feature extraction: alternating kernel ridge regression with AGOP-based feature reweighting.
+The leading eigenvector of $\bM_{\mathrm{AGOP}}$ identifies the direction of maximal concept variation---the concept steering vector.
+
+\citet{beaglehole2026universal} applied this pipeline to LLMs and VLMs at scale: 512 concepts, 69.1\% steerability on Llama-3.3-70B, with linear composability and cross-language transfer, using fewer than 500 samples per concept on a single A100 in under one minute.
+
+\textbf{The natural question}: does this linear concept geometry extend to Diffusion Transformers?
+If it does, we obtain the first zero-overhead steering method for diffusion models.
+
+\subsection{Why This Is Non-Obvious}
+
+DiTs differ from autoregressive LLMs in ways that make the transfer non-trivial:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Timestep conditioning.} The same architecture processes radically different inputs at each noise level $t \in [0, T]$.
+    A concept vector valid at one timestep may be meaningless at another.
+    \item \textbf{Spatial structure.} DiT activations have shape $(N, D)$ where $N$ is the number of spatial tokens (patches), adding a dimension absent in LLMs.
+    \item \textbf{Trajectory coupling.} Denoising is iterative; a perturbation at step $t$ propagates through all subsequent steps.
+    \item \textbf{Noise-schedule interaction.} Adding a constant perturbation could disrupt the carefully calibrated signal-to-noise ratio.
+\end{enumerate}
+
+However, growing evidence suggests these challenges are surmountable (\Cref{sec:evidence}).
+
+% ==================================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Theoretical Foundations: AGOP, RFM, and the NFA}
+
+The AGOP framework originates in \citet{radhakrishnan2024mechanism}, who showed that neural networks learn features by aligning weight matrices with the gradient outer product.
+\citet{radhakrishnan2025linear} proved that linear RFMs generalize Iteratively Reweighted Least Squares (IRLS), providing the first theoretical guarantees for RFM in overparameterized settings.
+\citet{beaglehole2024neural} showed that AGOP projections produce Deep Neural Collapse---the rigid geometric structure of representations in final layers.
+The extension to convolutional networks \citep{beaglehole2023cnn} established that AGOP operates on \emph{patches} of activations in spatially-structured data, which is directly relevant to the patch-based tokenization in DiTs.
+
+\subsection{Activation Analysis in Diffusion Models}
+\label{sec:evidence}
+
+\paragraph{h-space and U-Net activations.}
+\citet{kwon2023diffusion} discovered that U-Net bottleneck activations (``h-space'') encode semantic concepts linearly: $\mathbf{h} + \alpha\,\Delta\mathbf{h}$ produces coherent edits.
+Critically, they found that concept directions exhibit \emph{homogeneity} (same direction works across images) and \emph{composability} (directions combine additively).
+\citet{haas2023discovering} applied \emph{unsupervised} PCA to h-space and found that the top principal components correspond to interpretable attributes (pose, gender, age, smile) with as few as $\sim$10 samples needed for convergence.
+\citet{li2024selfdiscovering} achieved self-supervised direction discovery in h-space, finding that \textbf{a single vector per concept works across all timesteps}---a key positive signal for our approach.
+
+\paragraph{Probing diffusion representations.}
+\citet{baranchuk2022label} established the protocol of training MLP probes on U-Net decoder activations, demonstrating rich semantic structure.
+\citet{chen2023scene} showed that linear probes on Stable Diffusion decode depth and foreground/background, and that interventions on these linear axes \emph{causally control} generation.
+Representations emerge surprisingly early in the denoising process.
+
+\paragraph{DiT-specific interpretability.}
+\citet{conceptattention2025} (ICML 2025) demonstrated that linear projections in the DiT output space yield sharp concept saliency maps, with later layers (last 10 of 18) most interpretable and optimal probing at intermediate noise levels ($t \approx 500$ out of 1000).
+\citet{park2024dit} found that SD3's semantic directions form \emph{orthogonal subspaces}, and that DiT's joint text-image self-attention provides inherently better disentanglement than U-Net cross-attention.
+\citet{notallactivations2024} systematically evaluated 279 activation types in SDXL, finding that cross-attention queries and deep ViT block outputs carry the richest semantic information.
+
+\paragraph{Activation steering for diffusion.}
+\citet{lyu2025activation} (ICLR 2025 Spotlight) introduced \textbf{Activation Transport}, which uses optimal transport to steer SDXL and Flux activations at LayerNorm layers.
+A key finding: \emph{naive mean-difference steering pushes activations out of distribution}, motivating more principled extraction methods---exactly the gap that RFM/AGOP fills.
+
+\subsection{Other Steering Methods}
+
+\citet{gandikota2023concept} find low-rank concept directions in \emph{weight space} via LoRA (Concept Sliders), requiring per-concept training.
+\citet{epstein2023selfguidance} use internal attention maps for spatial control (Self-Guidance).
+\citet{gandikota2023erasing} erase concepts from diffusion models by fine-tuning, a complementary approach.
+\citet{singhal2025fksteering} introduced FK steering via sequential Monte Carlo, the current state of the art for training-free inference-time control.
+
+\subsection{Positioning LASD}
+
+LASD differs from prior work in three key ways:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Extraction method}: RFM/AGOP (principled, theory-backed by the NFA) rather than PCA, mean-difference, or CLIP-guided optimization.
+    This matters because Activation Transport \citep{lyu2025activation} showed that naive mean-difference directions push activations out of distribution.
+    RFM's AGOP eigenvectors capture the directions of maximal \emph{predictive} variation, not just maximal variance (PCA) or maximal separation (mean-difference).
+    \item \textbf{Architecture}: Targets DiTs (the current dominant backbone), extending h-space editing from U-Nets.
+    DiTs share the residual-stream transformer architecture where RFM steering has been validated \citep{beaglehole2026universal}.
+    \item \textbf{Systematic scale}: Evaluates across many concepts ($\geq$50) with standardized metrics, rather than demonstrating a few hand-picked edits.
+\end{enumerate}
+
+We are candid that the conceptual contribution is primarily \emph{empirical}: the central bet is whether DiT activations exhibit the same linear concept geometry found in LLMs, and whether RFM extraction is superior to simpler alternatives for diffusion steering.
+
+% ==================================================================
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+
+Let $f_\theta$ be a pre-trained DiT with $L$ transformer blocks.
+At denoising step $t$ and block $\ell$, the model computes hidden activations via adaLN-conditioned transformer blocks:
+\begin{equation}
+    \bA_\ell^{(t)} = \mathrm{DiTBlock}_\ell\bigl(\bA_{\ell-1}^{(t)},\; t,\; \bc\bigr) \;\in\; \R^{N \times D},
+\end{equation}
+where $N$ is the number of spatial tokens, $D$ the hidden dimension, $t$ the noise level, and $\bc$ the text conditioning.
+
+Given a semantic concept $\mathcal{C}$ (e.g., ``high aesthetic quality''), LASD steers by:
+\begin{equation}
+    \tilde{\bA}_\ell^{(t)} = \bA_\ell^{(t)} + \varepsilon(t)\; \bv_\ell^{(t)}\; \mathbf{1}_N^\top,
+    \label{eq:lasd}
+\end{equation}
+where $\bv_\ell^{(t)} \in \R^D$ is the concept vector, $\varepsilon(t)$ is a timestep-dependent steering strength, and $\mathbf{1}_N^\top$ broadcasts across all spatial positions.
+
+\subsection{Concept Vector Extraction via RFM}
+\label{sec:extraction}
+
+We adapt the RFM pipeline of \citet{radhakrishnan2024mechanism,beaglehole2026universal} to DiT activations.
+The procedure (\Cref{alg:extraction}) has four stages.
+
+\begin{algorithm}[h]
+\caption{LASD Concept Vector Extraction}
+\label{alg:extraction}
+\begin{algorithmic}[1]
+\REQUIRE Pre-trained DiT $f_\theta$, concept classifier/reward $r_\mathcal{C}$, prompt set $\mathcal{P}$, target layer $\ell$, timestep bin $\mathcal{T}_b$, RFM iterations $R$
+\ENSURE Concept vector $\bv_\ell^{(b)}$
+
+\STATE \textbf{Stage 1: Activation collection}
+\FOR{$i = 1, \ldots, M$}
+    \STATE Sample prompt $\bc^{(i)} \sim \mathcal{P}$, generate image $\bx_0^{(i)}$ via full denoising
+    \STATE Record label $y^{(i)} = r_\mathcal{C}(\bx_0^{(i)}) \in \{-1, +1\}$
+    \FOR{$t \in \mathcal{T}_b$}
+        \STATE Re-run denoising step $t$; record $\ba_{\ell,t}^{(i)} = \mathrm{MeanPool}_N\bigl(\bA_\ell^{(t)}\bigr) \in \R^D$
+    \ENDFOR
+    \STATE $\bar{\ba}_\ell^{(i)} = \frac{1}{|\mathcal{T}_b|}\sum_{t \in \mathcal{T}_b} \ba_{\ell,t}^{(i)}$ \hfill \COMMENT{pool across timesteps in bin}
+\ENDFOR
+\STATE Dataset: $\mathcal{D} = \{(\bar{\ba}_\ell^{(i)}, y^{(i)})\}_{i=1}^M$
+
+\STATE \textbf{Stage 2: Recursive Feature Machine}
+\STATE Initialize feature matrix $\bM_0 = \mathbf{I}_D$
+\FOR{$r = 1, \ldots, R$}
+    \STATE Fit kernel ridge regression on $\mathcal{D}$ with Laplace kernel $K(\ba, \ba') = \exp(-\|\bM_{r-1}^{1/2}(\ba - \ba')\|_1)$:
+    \[
+        \hat{f}_r(\ba) = \mathbf{K}_r(\ba, \bar{\bA})\bigl(\mathbf{K}_r(\bar{\bA}, \bar{\bA}) + \lambda \mathbf{I}\bigr)^{-1} \mathbf{y}
+    \]
+    \STATE \textbf{Stage 3: Compute AGOP}
+    \[
+        \bM_r = \frac{1}{M}\sum_{i=1}^{M} \nabla_{\ba} \hat{f}_r(\bar{\ba}_\ell^{(i)})\, \nabla_{\ba} \hat{f}_r(\bar{\ba}_\ell^{(i)})^\top
+    \]
+\ENDFOR
+
+\STATE \textbf{Stage 4: Extract concept direction}
+\STATE $\bv_\ell^{(b)} \leftarrow$ leading eigenvector of $\bM_R$
+\STATE Orient: $\bv_\ell^{(b)} \leftarrow \mathrm{sign}\bigl(\mathrm{corr}(\langle \bar{\ba}_\ell^{(i)}, \bv_\ell^{(b)} \rangle, y^{(i)})\bigr) \cdot \bv_\ell^{(b)}$
+
+\RETURN $\bv_\ell^{(b)}$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Credit assignment.}
+Concept labels are defined on $\bx_0$ (the final image), but activations are at intermediate $t > 0$.
+RFM resolves this naturally: it extracts the activation direction most \emph{predictive} of the terminal label, performing implicit credit assignment from outcome to intermediate representation.
+This is analogous to terminal-reward RL---the gradient outer product identifies which intermediate features ``commit'' to the eventual concept.
+
+\paragraph{Spatial pooling.}
+Following the Convolutional NFA \citep{beaglehole2023cnn}, which showed AGOP operates on patches, we mean-pool over the $N$ spatial tokens to obtain a $D$-dimensional activation vector per sample.
+For global concepts (style, quality), this is natural.
+For spatially localized concepts, attention-weighted pooling (using DiT cross-attention maps $\alpha_{n,s}$) can be substituted.
+
+\subsection{Handling Timestep Dependence}
+\label{sec:timestep}
+
+We propose three strategies, to be compared empirically:
+
+\paragraph{Strategy A: Shared vector, adaptive scaling.}
+A single $\bv_\ell$ from activations pooled across all $t$, with adaptive magnitude:
+\begin{equation}
+    \varepsilon(t) = \varepsilon_0 \cdot \sigma(t)^{-\alpha},
+    \label{eq:adaptive_eps}
+\end{equation}
+where $\sigma(t)$ is the noise schedule.
+At high noise (large $\sigma$), the perturbation is small; at low noise, it is stronger.
+Motivated by the finding of \citet{li2024selfdiscovering} that a single concept vector works across timesteps in U-Nets.
+
+\paragraph{Strategy B: Time-binned vectors.}
+Partition the denoising trajectory into $B$ bins (e.g., $B \in \{3, 4, 5\}$: high/medium/low noise).
+Extract a separate $\bv_\ell^{(b)}$ per bin using only activations from timesteps in that bin.
+Motivated by the observation that DiTs perform qualitatively different computations at different noise levels: coarse layout at high noise, fine details at low noise \citep{kwon2023diffusion,conceptattention2025}.
+
+\paragraph{Strategy C: Continuous interpolation.}
+Smooth interpolation between bin vectors:
+\begin{equation}
+    \bv_\ell(t) = \sum_{b=1}^{B} w_b(t)\, \bv_\ell^{(b)}, \quad w_b(t) = \frac{\exp(-\|t - t_b\|^2 / 2\tau^2)}{\sum_{b'} \exp(-\|t - t_{b'}\|^2 / 2\tau^2)},
+\end{equation}
+avoiding discontinuities at bin boundaries.
+
+\paragraph{Our hypothesis.}
+Given the positive evidence from \citet{li2024selfdiscovering} (single-vector sufficiency in U-Nets) and the adaLN conditioning in DiTs (which may normalize timestep-dependent variation), we hypothesize that Strategy A or B with $B \leq 4$ will suffice for most global concepts.
+The stability diagnostic in \Cref{sec:exp_stage1} will resolve this empirically.
+
+\subsection{Multi-Concept Composition}
+
+Given $K$ concept vectors $\{\bv_\ell^{(k)}\}$ with desired strengths $\{\varepsilon_k\}$:
+\begin{equation}
+    \tilde{\bA}_\ell^{(t)} = \bA_\ell^{(t)} + \sum_{k=1}^{K} \varepsilon_k(t)\, \bv_\ell^{(k)}\, \mathbf{1}_N^\top.
+    \label{eq:compose}
+\end{equation}
+Clean composition requires approximate orthogonality: $\langle \bv^{(j)}, \bv^{(k)} \rangle \approx 0$ for $j \neq k$.
+The orthogonal subspace structure found by \citet{park2024dit} in SD3 suggests this may hold.
+If concepts are entangled, Gram--Schmidt orthogonalization can be applied post-extraction.
+
+\subsection{Theoretical Limitations}
+
+We emphasize two important caveats:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{No distributional guarantee.} FK steering is asymptotically consistent: as $k \to \infty$, the particle distribution converges to $p_\theta(\bx_0|\bc)\exp(\lambda r(\bx_0))$.
+    LASD has no such guarantee.
+    Adding $\varepsilon\bv$ to activations modifies the velocity field in a way that does not correspond to sampling from a known target distribution.
+    This is the same limitation as CFG, which also lacks distributional guarantees yet is universally deployed.
+    \item \textbf{Trajectory perturbation.} Unlike autoregressive LLMs where each token is semi-independent, diffusion denoising is iterative---perturbations accumulate.
+    \citet{lyu2025activation} showed that naive mean-difference steering pushes activations out of distribution.
+    RFM/AGOP may mitigate this (it extracts the direction of maximal \emph{predictive} variation, which may stay closer to the data manifold), but this requires empirical verification.
+\end{enumerate}
+
+% ==================================================================
+\section{Experiment Plan}
+\label{sec:experiments}
+
+We design a staged plan with explicit go/no-go gates, following the experimental methodology of \citet{radhakrishnan2024mechanism,beaglehole2026universal}: systematic validation of the ansatz first, then application.
+
+\subsection{Models and Infrastructure}
+
+\begin{table}[h]
+\centering
+\caption{Target models for evaluation.}
+\label{tab:models}
+\begin{tabular}{llcl}
+\toprule
+\textbf{Model} & \textbf{Architecture} & \textbf{Params} & \textbf{Rationale} \\
+\midrule
+DiT-XL/2 & Class-conditional DiT & 675M & Cleanest DiT, controlled ImageNet eval \\
+SD3 Medium & MM-DiT (joint attn) & 2B & Text-to-image, joint text-image attention \\
+Flux.1-dev & Flow-matching DiT & 12B & SotA, tests scaling \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Activation hooks.}
+We instrument each DiT block to record the residual-stream activation \emph{after} the adaLN modulation and before the attention/MLP sub-block.
+For SD3/Flux with joint attention, we extract from both the image-token and text-token streams independently.
+Implementation: register PyTorch forward hooks on each \texttt{DiTBlock}, storing the spatially-pooled activation $\ba_{\ell,t} = \mathrm{MeanPool}(\bA_\ell^{(t)}) \in \R^D$.
+
+\paragraph{Concept labeling.}
+We use established classifiers as concept oracles:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Aesthetic quality}: LAION aesthetic predictor v2 (continuous score, binarized at median).
+    \item \textbf{Style}: CLIP zero-shot classification (``a photo'' vs.\ ``a watercolor painting'' vs.\ ``an oil painting'').
+    \item \textbf{Safety}: NudeNet for NSFW detection; Q16 safety classifier \citep{schramowski2022safe}.
+    \item \textbf{Text-image alignment}: CLIPScore (continuous, binarized at median).
+    \item \textbf{Object presence}: ImageNet class labels (for DiT-XL/2); YOLO detections (for text-to-image models).
+    \item \textbf{Color/lighting}: simple heuristics on generated images (mean hue, brightness).
+\end{itemize}
+
+\paragraph{Prompt datasets.}
+\begin{itemize}[leftmargin=*]
+    \item DiT-XL/2: ImageNet class labels (1000 classes, 10 samples each $= 10{,}000$ images).
+    \item SD3/Flux: DrawBench (200 prompts), PartiPrompts (1600 prompts), COCO captions (5000 random).
+\end{itemize}
+
+\paragraph{RFM configuration.}
+Following \citet{beaglehole2026universal}: Laplace kernel, $R = 3$ RFM iterations, $\lambda = 0.01$ (ridge regularization), $M \in \{200, 500, 1000, 5000\}$ samples (data efficiency sweep).
+All extraction on a single A100 GPU; expected time: $< 5$ minutes per (concept, layer, timestep-bin) triple.
+
+% ------------------------------------------------------------------
+\subsection{Stage 0: The Neural Feature Ansatz in DiTs}
+\label{sec:exp_stage0}
+
+\paragraph{Goal.} Validate whether the NFA holds in DiTs: is the feature matrix at each layer proportional to the AGOP?
+
+\paragraph{Protocol.}
+Following \citet{radhakrishnan2024mechanism}, for a pre-trained DiT-XL/2:
+\begin{enumerate}[leftmargin=*]
+    \item At each layer $\ell$ and a representative set of timesteps $t \in \{100, 300, 500, 700, 900\}$ (out of 1000):
+    \begin{itemize}
+        \item Compute the Neural Feature Matrix: $\mathrm{NFM}_\ell^{(t)} = \bW_\ell^{(t)\top}\, \bW_\ell^{(t)}$, where $\bW_\ell^{(t)}$ are the effective weight matrices after adaLN modulation at timestep $t$.
+        \item Compute AGOP over 5000 samples: $\bM_\ell^{(t)} = \frac{1}{n}\sum_i \nabla_{\ba_\ell} f(\ba_\ell^{(i,t)})\, \nabla_{\ba_\ell} f(\ba_\ell^{(i,t)})^\top$.
+    \end{itemize}
+    \item Measure $\cos(\mathrm{NFM}_\ell^{(t)},\; \bM_\ell^{(t)})$ (Frobenius inner product, normalized).
+\end{enumerate}
+
+\paragraph{Expected result.}
+If the NFA holds in DiTs, cosine similarity should approach 1.0, as observed in ViTs, ResNets, and GPT-2 \citep{radhakrishnan2024mechanism}.
+We expect this to hold for middle and late layers ($\ell \geq L/3$) at intermediate and low noise levels ($t \leq 700$), but potentially weaker at very early layers and very high noise where activations are noise-dominated.
+
+\paragraph{Go/no-go.}
+If $\cos < 0.7$ across all (layer, timestep) pairs, the NFA does not hold in DiTs, and the theoretical motivation for RFM-based extraction collapses.
+The project would pivot to empirical probing without the NFA justification (using RFM as a black-box feature extractor), or to a representation analysis paper.
+
+\paragraph{Novel contribution.}
+Regardless of outcome, this experiment is new: the NFA has never been tested on diffusion models.
+The result---positive or negative---extends our understanding of feature learning in generative models.
+
+% ------------------------------------------------------------------
+\subsection{Stage 1: Linearity Probing and Temporal Stability}
+\label{sec:exp_stage1}
+
+\paragraph{Goal.} Determine (a) whether concept information is linearly decodable from DiT activations, and (b) whether concept directions are stable across timesteps.
+
+\paragraph{Protocol: Linearity probing.}
+For each of $C = 10$ concepts, each layer $\ell$, and each timestep $t$:
+\begin{enumerate}[leftmargin=*]
+    \item Collect $M = 5000$ (activation, label) pairs as in \Cref{alg:extraction}.
+    \item Train three probes on an 80/20 train/test split:
+    \begin{itemize}
+        \item \textbf{RFM probe}: $R = 3$ iterations, Laplace kernel.
+        \item \textbf{Linear probe}: logistic regression on $\ba_{\ell,t}$.
+        \item \textbf{Nonlinear probe}: 2-layer MLP (hidden dim 256, ReLU).
+    \end{itemize}
+    \item Report classification accuracy for each (probe, layer, timestep) combination.
+\end{enumerate}
+
+\paragraph{Expected result.}
+Based on \citet{conceptattention2025}, \citet{chen2023scene}, and \citet{baranchuk2022label}:
+\begin{itemize}[leftmargin=*]
+    \item Linear probe accuracy should exceed 80\% for global concepts (aesthetics, style) at middle-to-late layers and intermediate noise levels ($t \in [300, 700]$).
+    \item The gap between linear and nonlinear probes should be small ($<$5\%), confirming approximate linearity.
+    \item RFM probes should match or exceed linear probes (RFM captures the most predictive direction, not just the most separable).
+    \item Fine-grained concepts (specific object presence) may require later layers.
+\end{itemize}
+
+\paragraph{Protocol: Temporal stability.}
+Extract concept vectors $\bv_\ell^{(t)}$ at each timestep.
+Compute the stability metric:
+\begin{equation}
+    S(\mathcal{C}, \ell) = \frac{2}{|\mathcal{T}|(|\mathcal{T}|-1)} \sum_{t_1 < t_2} \cos\bigl(\bv_\ell^{(t_1)},\; \bv_\ell^{(t_2)}\bigr).
+    \label{eq:stability}
+\end{equation}
+Also produce heatmaps of pairwise cosine similarity across all $(t_1, t_2)$ pairs.
+
+\paragraph{Expected result.}
+\begin{itemize}[leftmargin=*]
+    \item For global concepts (aesthetics, style): $S > 0.7$, indicating that a shared vector (Strategy A) or coarse binning ($B = 3$--$4$, Strategy B) suffices.
+    This prediction is based on \citet{li2024selfdiscovering}'s finding that single vectors work across timesteps in U-Nets.
+    \item For fine-grained concepts (object attributes): lower $S$, possibly requiring finer binning.
+    \item Stability should be higher for middle layers (semantic content) than early layers (low-level features) or late layers (output-specific).
+\end{itemize}
+
+\paragraph{Go/no-go.}
+If linear probe accuracy is near chance ($<$60\% for binary concepts) at all (layer, timestep) pairs, the activations do not encode concepts linearly and LASD cannot work.
+Pivot: a mechanistic study of \emph{why} DiT representations differ from LLM representations.
+
+If $S < 0.3$ for most concepts, per-timestep vectors are needed and the storage/extraction cost increases, though the method remains training-free.
+
+% ------------------------------------------------------------------
+\subsection{Stage 2: Steering Evaluation}
+\label{sec:exp_stage2}
+
+\paragraph{Goal.} Evaluate whether RFM-extracted concept vectors actually steer generation effectively.
+
+\paragraph{Protocol.}
+For each concept $\mathcal{C}$ and model:
+\begin{enumerate}[leftmargin=*]
+    \item Extract concept vectors using the best strategy from Stage 1 (A, B, or C).
+    \item Generate 1000 images per prompt set with steering (\Cref{eq:lasd}) at varying $\varepsilon$.
+    \item Generate 1000 images without steering (baseline).
+    \item Evaluate all images with the concept oracle.
+\end{enumerate}
+
+\paragraph{Baselines.}
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{No steering}: base model outputs.
+    \item \textbf{CFG} (standard, $2\times$ cost): the universal default.
+    \item \textbf{FK steering} ($k = 4, 8$): particle-based SMC \citep{singhal2025fksteering}.
+    \item \textbf{Concept Sliders}: per-concept LoRA \citep{gandikota2023concept}.
+    \item \textbf{Activation Transport}: OT-based steering \citep{lyu2025activation}.
+    \item \textbf{Mean-difference vector}: $\bv = \E[\ba | y = +1] - \E[\ba | y = -1]$, without RFM. (Ablation: is RFM better than the simplest baseline?)
+    \item \textbf{PCA direction}: top PC of positive-class activations. (Ablation: is RFM better than unsupervised PCA?)
+    \item \textbf{Linear probe weight}: logistic regression weight vector. (Ablation: is AGOP better than linear classification?)
+\end{enumerate}
+
+\paragraph{Metrics.}
+
+\begin{table}[h]
+\centering
+\caption{Evaluation metrics for steering experiments.}
+\label{tab:metrics}
+\begin{tabular}{llp{7cm}}
+\toprule
+\textbf{Metric} & \textbf{Measures} & \textbf{How} \\
+\midrule
+Concept accuracy & Steering effectiveness & Fraction of steered images classified as concept-positive by the oracle \\
+Steerability rate & Breadth & Fraction of concepts where accuracy improves by $\geq$15\% \\
+FID & Quality preservation & Fr\'{e}chet distance vs.\ unsteered reference set \\
+CLIP Score & Text-image alignment & CLIP-L/14 similarity \\
+LPIPS diversity & Mode coverage & Variance of LPIPS across 50 generations per prompt \\
+$\Delta$Reward & Reward improvement & Mean change in concept reward vs.\ unsteered \\
+Cost ratio & Efficiency & FLOPs per steered generation / FLOPs per unsteered \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key comparisons.}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{LASD vs.\ FK steering}: same steering quality at $1.0\times$ vs.\ $k\times$ cost?
+    \item \textbf{LASD vs.\ Concept Sliders}: comparable effectiveness without per-concept training?
+    \item \textbf{RFM vs.\ mean-difference}: does the principled AGOP extraction outperform naive baselines?
+    This is critical because \citet{lyu2025activation} showed mean-difference steering is unreliable.
+    \item \textbf{LASD vs.\ Activation Transport}: RFM's vector addition vs.\ OT-based activation mapping.
+\end{itemize}
+
+\paragraph{Expected result.}
+\begin{itemize}[leftmargin=*]
+    \item LASD achieves concept accuracy within 10--15\% of FK steering ($k = 4$) for global concepts, at $1.0\times$ cost.
+    \item RFM vectors outperform mean-difference and PCA by 5--15\% in concept accuracy, consistent with the 69.1\% vs.\ 44.6\% (PCA) gap in \citet{beaglehole2026universal}.
+    \item FID degradation under 10\% for $\varepsilon$ in the effective range, with a smooth Pareto frontier.
+    \item Steerability rate $\geq$40\% across 50+ concepts.
+\end{itemize}
+
+% ------------------------------------------------------------------
+\subsection{Stage 3: Ablations}
+\label{sec:exp_stage3}
+
+\paragraph{3a. Steering strength.}
+Sweep $\varepsilon \in \{0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0\}$ (normalized by mean activation norm $\|\ba_\ell\|$).
+Plot concept accuracy vs.\ FID (Pareto frontier).
+Identify the onset of artifacts (sharp FID increase).
+\textbf{Expected}: smooth degradation for $\varepsilon / \|\ba_\ell\| < 0.1$, artifacts above 0.3.
+
+\paragraph{3b. Layer selection.}
+Compare steering at: (i) all layers, (ii) only middle layers $[\lfloor L/3 \rfloor, \lfloor 2L/3 \rfloor]$, (iii) only the single best layer from Stage 1, (iv) only the last 10 layers (motivated by \citet{conceptattention2025}).
+\textbf{Expected}: middle layers most effective; early layers cause artifacts; single-best-layer sufficient for 80\% of the full-model effect.
+
+\paragraph{3c. Timestep strategies.}
+Compare Strategies A, B ($B \in \{2, 3, 4, 5, 8\}$), and C on the same concepts.
+Measure concept accuracy and FID for each.
+\textbf{Expected}: Strategy B with $B = 3$--$4$ is optimal; Strategy A is 5--10\% worse; Strategy C marginal improvement over B.
+
+\paragraph{3d. Data efficiency.}
+Sweep $M \in \{50, 100, 200, 500, 1000, 5000\}$.
+\textbf{Expected}: following \citet{beaglehole2026universal}, $M \approx 200$--$500$ suffices for global concepts.
+Fine-grained concepts may require $M \geq 1000$.
+
+\paragraph{3e. RFM iterations.}
+Sweep $R \in \{1, 2, 3, 5\}$.
+\textbf{Expected}: $R = 3$ is near-optimal, with diminishing returns beyond $R = 3$, consistent with prior RFM results.
+
+\paragraph{3f. Extraction method.}
+Compare: (i) RFM/AGOP, (ii) PCA on positive class, (iii) mean-difference, (iv) logistic regression weight, (v) CLIP-guided optimization (as in \citet{kwon2023diffusion}).
+\textbf{Expected}: RFM $>$ logistic $>$ mean-difference $>$ PCA, with RFM's advantage largest for concepts with nonlinear boundaries in activation space.
+
+% ------------------------------------------------------------------
+\subsection{Stage 4: Composability and Advanced Applications}
+\label{sec:exp_stage4}
+
+\paragraph{4a. Multi-concept composition.}
+Test $\bv = \sum_k \varepsilon_k \bv^{(k)}$ for pairs and triples:
+\begin{itemize}[leftmargin=*]
+    \item ``high aesthetic'' + ``watercolor style'' + ``warm lighting''
+    \item ``safe content'' + ``high CLIP score''
+    \item ``photorealistic'' + ``low saturation''
+\end{itemize}
+Measure per-concept accuracy and overall coherence (human evaluation, $n = 200$ pairwise comparisons).
+Report concept vector orthogonality: $|\langle \bv^{(j)}, \bv^{(k)} \rangle|$ for all pairs.
+\textbf{Expected}: clean composition for orthogonal concepts ($|\cos| < 0.2$); interference for correlated concepts.
+
+\paragraph{4b. Negative steering (concept suppression).}
+Apply $\varepsilon < 0$ to suppress NSFW content or reduce specific attributes.
+Compare to Erased Stable Diffusion \citep{gandikota2023erasing}.
+\textbf{Expected}: effective suppression with less collateral damage than weight editing (since LASD is reversible).
+
+\paragraph{4c. LASD + FK hybrid.}
+Use LASD to bias all $k$ FK particles, then apply SMC resampling on top.
+Hypothesis: LASD + FK($k = 2$) matches FK($k = 8$) alone, a $4\times$ compute saving.
+
+\paragraph{4d. Cross-prompt generalization.}
+Extract $\bv$ from prompt set $\mathcal{P}_A$, apply to held-out $\mathcal{P}_B$.
+Report accuracy drop.
+\textbf{Expected}: $<$5\% drop for global concepts (analogous to cross-language transfer in \citet{beaglehole2026universal}); larger drop for prompt-specific concepts.
+
+\paragraph{4e. Scale test.}
+If Stages 0--3 succeed on DiT-XL/2 and SD3, test on Flux-12B where FK steering ($k = 8$) would be prohibitively expensive ($8 \times 12\mathrm{B} = 96\mathrm{B}$ effective params per generation).
+LASD's zero-overhead property becomes most compelling at scale.
+
+% ==================================================================
+\section{Evaluation Framework}
+\label{sec:evaluation}
+
+\subsection{Primary Success Criteria}
+
+\begin{table}[h]
+\centering
+\caption{Success tiers for the LASD project.}
+\label{tab:success}
+\begin{tabular}{lp{9cm}}
+\toprule
+\textbf{Tier} & \textbf{Criteria} \\
+\midrule
+\textbf{Strong success} & Steerability $\geq$50\% across 50+ concepts; concept accuracy within 10\% of FK($k=4$) at $1.0\times$ cost; FID degradation $<$5\%; multi-concept composition works for $\geq$3 simultaneous concepts. \\[4pt]
+\textbf{Moderate success} & Steerability $\geq$30\% for global concepts (style, quality); RFM outperforms mean-difference by $\geq$10\%; one-step generation gap partially closed via hybrid LASD+FK. \\[4pt]
+\textbf{Minimum publication} & NFA validated in DiTs (Stage 0); linear probing shows rich concept structure with clear layer/timestep dependence (Stage 1). New empirical contribution to DiT interpretability. \\[4pt]
+\textbf{Failure} & NFA does not hold ($\cos < 0.5$); linear probes near chance; RFM no better than random direction. Pivot to mechanistic analysis of why DiT representations differ from LLMs. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Automated Evaluation Pipeline}
+
+To ensure reproducibility and prevent cherry-picking:
+\begin{enumerate}[leftmargin=*]
+    \item All concept accuracy scores computed by \emph{held-out} classifiers (not the same oracle used for labeling).
+    \item FID computed on 10,000 generated images (standard protocol).
+    \item Each experiment repeated with 3 random seeds; report mean $\pm$ std.
+    \item Hyperparameters ($\varepsilon$, $B$, $R$, $M$, layer) selected on a validation split of prompts; final numbers reported on a test split.
+\end{enumerate}
+
+\subsection{Human Evaluation}
+
+For the final comparison (Stage 2, top-performing LASD variant vs.\ baselines):
+\begin{itemize}[leftmargin=*]
+    \item $n = 200$ pairwise comparisons per baseline pair.
+    \item Evaluators rate: (a) concept presence (``Which image better reflects [concept]?''), (b) overall quality (``Which image looks better?'').
+    \item Report win rate, ties, and 95\% confidence intervals via bootstrap.
+\end{itemize}
+
+\subsection{Computational Cost Accounting}
+
+\begin{table}[h]
+\centering
+\caption{Expected computational costs.}
+\label{tab:compute}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Method} & \textbf{One-time cost} & \textbf{Per-generation cost ratio} \\
+\midrule
+LASD (ours) & $\sim$5 min/concept/layer (A100) & $\approx 1.000\times$ \\
+Concept Sliders & $\sim$1 hr/concept (A100) & $1.000\times$ \\
+FK ($k=4$) & None & $4.0\times$ \\
+FK ($k=8$) & None & $8.0\times$ \\
+Activation Transport & Direction extraction & $\sim$1.1\times$ \\
+CFG & None & $2.0\times$ \\
+DDPO (RL) & $\sim$10+ GPU-hrs & $1.0\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The LASD per-generation overhead is $O(NDB)$ for vector addition across $N$ spatial tokens, $D$ hidden dims, $B$ timestep bins---negligible compared to the $O(N^2D)$ attention computation per DiT block.
+
+% ==================================================================
+\section{Risk Analysis and Fallbacks}
+\label{sec:risks}
+
+\subsection{Risk 1: Concept Directions Are Strongly Timestep-Dependent}
+
+If $S(\mathcal{C}, \ell) < 0.3$ (\Cref{eq:stability}), the concept subspace rotates substantially across noise levels.
+
+\textbf{Mitigation}: Use Strategy B with fine bins ($B = 8$--$10$).
+Storage increases to $B \times L$ vectors per concept, but extraction and steering remain training-free.
+The per-generation cost remains $\approx 1.0\times$ (selecting the appropriate bin vector is a table lookup).
+
+\textbf{Deeper investigation}: Analyze whether adaLN is the source of rotation.
+If so, extract concept vectors in the \emph{pre-adaLN} activation space, which is timestep-invariant by construction.
+
+\subsection{Risk 2: Steering Causes Artifacts}
+
+Adding $\varepsilon\bv$ could push the denoising trajectory off the data manifold, especially at late (low-noise) timesteps where the signal-to-noise ratio is high and small perturbations are amplified.
+
+\textbf{Mitigation}: (a) Apply steering only during the ``semantic planning'' phase ($t > 0.3T$), not during fine detail refinement ($t < 0.3T$), following \citet{kwon2023diffusion}'s finding that semantic editing is effective in the first $\sim$30\% of reverse steps.
+(b) Normalize the steering vector: $\varepsilon(t) = \varepsilon_0 \cdot \|\ba_\ell^{(t)}\| / \|\bv_\ell\|$ to maintain the activation norm.
+(c) Project $\bv$ onto the local tangent space of the activation manifold.
+
+\subsection{Risk 3: RFM Is No Better Than Simple Baselines}
+
+If mean-difference or PCA vectors perform equally well, the contribution reduces to ``applying existing activation editing to DiTs'' without the RFM/AGOP novelty.
+
+\textbf{Mitigation}: This is still a valid contribution (extending to DiTs, systematic evaluation), but weaker.
+The risk is partially mitigated by the Activation Transport finding \citep{lyu2025activation} that naive mean-difference fails, motivating principled extraction.
+
+\textbf{Deeper investigation}: Compare the \emph{geometry} of RFM vs.\ mean-difference vectors.
+Measure whether RFM vectors lie closer to the data manifold (lower mean cosine distance to observed activations).
+
+\subsection{Risk 4: Concept Directions Are Prompt-Dependent}
+
+Visual concepts may be realized differently for different prompts (``beauty'' in a landscape vs.\ a portrait).
+
+\textbf{Mitigation}: Evaluate cross-prompt generalization explicitly (Stage 4d).
+If necessary, extract prompt-class-specific vectors (e.g., separate vectors for ``landscape aesthetics'' and ``portrait aesthetics'').
+
+% ==================================================================
+\section{Timeline and Resources}
+\label{sec:timeline}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Stage} & \textbf{Duration} & \textbf{GPU budget} \\
+\midrule
+Stage 0: NFA validation & 1--2 weeks & 100 A100-hours \\
+Stage 1: Probing + stability & 2--3 weeks & 200 A100-hours \\
+Stage 2: Steering evaluation & 2--3 weeks & 300 A100-hours \\
+Stage 3: Ablations & 2 weeks & 200 A100-hours \\
+Stage 4: Composition + scale & 2--3 weeks & 400 A100-hours \\
+Writing & 2 weeks & --- \\
+\midrule
+\textbf{Total} & \textbf{$\sim$12 weeks} & \textbf{$\sim$1200 A100-hours} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ==================================================================
+\section{Broader Impact}
+\label{sec:impact}
+
+\paragraph{Democratization.}
+LASD makes concept control accessible on consumer hardware: extract vectors once ($<$5 min on one GPU), steer for free forever.
+This lowers the barrier for artists, content creators, and small teams who cannot afford RL fine-tuning or multi-particle inference.
+
+\paragraph{Safety.}
+Zero-cost NSFW suppression is directly deployable.
+Unlike fine-tuning (permanent, may degrade other capabilities) or FK steering ($k\times$ cost on every generation), activation steering can be toggled per-request.
+
+\paragraph{Interpretability.}
+The concept vectors are a window into what DiTs learn.
+Mapping which layers and timesteps encode which concepts provides a spatiotemporal atlas of diffusion model representations---advancing understanding beyond black-box usage.
+
+\paragraph{Dual-use risk.}
+Steering vectors can amplify harmful content ($\varepsilon > 0$) as easily as suppress it ($\varepsilon < 0$).
+We recommend releasing suppression directions and the extraction pipeline, but exercising caution with pre-computed vectors for sensitive concepts.
+
+% ==================================================================
+\section{Conclusion}
+
+We have proposed LASD, a method for zero-cost concept steering of Diffusion Transformers via RFM-extracted linear activation directions.
+The proposal is grounded in the Neural Feature Ansatz \citep{radhakrishnan2024mechanism}, builds on growing evidence that diffusion activations are approximately linear \citep{kwon2023diffusion,li2024selfdiscovering,conceptattention2025,park2024dit}, and addresses the unique challenges of timestep dependence and spatial structure with concrete strategies and diagnostics.
+The staged experimental plan---NFA validation, linearity probing, steering evaluation, ablations, and scaling---has explicit go/no-go criteria and fallbacks at each stage.
+
+If successful, LASD would fill a clear gap in the cost--capability landscape: the first zero-overhead, training-free, composable steering method for diffusion models.
+Even in partial success, the NFA validation and linearity probing experiments provide novel empirical insights into DiT representations, extending our understanding of feature learning in generative models.
+
+% ==================================================================
+\bibliographystyle{plainnat}
+\begin{thebibliography}{99}
+
+\bibitem[Baranchuk et~al.(2022)]{baranchuk2022label}
+Baranchuk, D., Rubachev, I., Voynov, A., Khrulkov, V., and Babenko, A.
+\newblock Label-efficient semantic segmentation with diffusion models.
+\newblock \emph{ICLR}, 2022.
+
+\bibitem[Beaglehole et~al.(2023)]{beaglehole2023cnn}
+Beaglehole, D., Radhakrishnan, A., Pandit, P., and Belkin, M.
+\newblock Mechanism of feature learning in convolutional neural networks.
+\newblock \emph{arXiv:2309.00570}, 2023.
+
+\bibitem[Beaglehole et~al.(2024)]{beaglehole2024neural}
+Beaglehole, D., Suk\'{e}n\'{i}k, P., Mondelli, M., and Belkin, M.
+\newblock Average gradient outer product as a mechanism for deep neural collapse.
+\newblock \emph{NeurIPS}, 2024.
+
+\bibitem[Beaglehole et~al.(2026)]{beaglehole2026universal}
+Beaglehole, D., Radhakrishnan, A., Boix-Adser\`{a}, E., and Belkin, M.
+\newblock Toward universal steering and monitoring of {AI} models.
+\newblock \emph{Science}, 391(6787):787--792, 2026.
+
+\bibitem[Chen et~al.(2023)]{chen2023scene}
+Chen, Y., Vi\'{e}gas, F., and Wattenberg, M.
+\newblock Beyond surface statistics: Scene representations in a latent diffusion model.
+\newblock \emph{NeurIPS}, 2023.
+
+\bibitem[Helbling et~al.(2025)]{conceptattention2025}
+Helbling, A., Meral, T.~H.~S., Hoover, B., Yanardag, P., and Chau, D.~H.
+\newblock Concept{A}ttention: Diffusion transformers learn highly interpretable features.
+\newblock \emph{ICML}, 2025.
+
+\bibitem[Epstein et~al.(2023)]{epstein2023selfguidance}
+Epstein, D., Jabri, A., Poole, B., Efros, A.~A., and Holynski, A.
+\newblock Diffusion self-guidance for controllable image generation.
+\newblock \emph{arXiv:2306.00986}, 2023.
+
+\bibitem[Gandikota et~al.(2023a)]{gandikota2023concept}
+Gandikota, R., Materzy\'{n}ska, J., Zhou, T., Torralba, A., and Bau, D.
+\newblock Concept sliders: {LoRA} adaptors for precise control in diffusion models.
+\newblock \emph{arXiv:2311.12092}, 2023.
+
+\bibitem[Gandikota et~al.(2023b)]{gandikota2023erasing}
+Gandikota, R., Materzy\'{n}ska, J., Fiotto-Kaufman, J., and Bau, D.
+\newblock Erasing concepts from diffusion models.
+\newblock \emph{arXiv:2303.07345}, 2023.
+
+\bibitem[Haas et~al.(2023)]{haas2023discovering}
+Haas, R., Huberman-Spiegelglas, I., Mulayoff, R., Gra{\ss}hof, S., Brandt, S.~S., and Michaeli, T.
+\newblock Discovering interpretable directions in the semantic latent space of diffusion models.
+\newblock \emph{arXiv:2303.11073}, 2023.
+
+\bibitem[Ho et~al.(2020)]{ho2020denoising}
+Ho, J., Jain, A., and Abbeel, P.
+\newblock Denoising diffusion probabilistic models.
+\newblock \emph{NeurIPS}, 2020.
+
+\bibitem[Kwon et~al.(2023)]{kwon2023diffusion}
+Kwon, M., Jeong, J., and Uh, Y.
+\newblock Diffusion models already have a semantic latent space.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Li et~al.(2024)]{li2024selfdiscovering}
+Li, H., Shen, C., Torr, P., Tresp, V., and Gu, J.
+\newblock Self-discovering interpretable diffusion latent directions for responsible text-to-image generation.
+\newblock \emph{CVPR}, 2024.
+
+\bibitem[Lipman et~al.(2023)]{lipman2023flow}
+Lipman, Y., Chen, R.~T.~Q., Ben-Hamu, H., Nickel, M., and Le, M.
+\newblock Flow matching for generative modeling.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Rodr\'{i}guez et~al.(2025)]{lyu2025activation}
+Rodr\'{i}guez, P., Blaas, A., Klein, M., Zappella, L., Apostoloff, N., Cuturi, M., and Suau, X.
+\newblock Controlling language and diffusion models by transporting activations.
+\newblock \emph{ICLR}, 2025.
+
+\bibitem[Meng et~al.(2024)]{notallactivations2024}
+Meng, B., Xu, Q., Wang, Z., Cao, X., and Huang, Q.
+\newblock Not all diffusion model activations have been evaluated as discriminative features.
+\newblock \emph{arXiv:2410.03558}, 2024.
+
+\bibitem[Shuai et~al.(2024)]{park2024dit}
+Shuai, Z., Wu, C., Tang, Z., Song, B., and Shen, L.
+\newblock Latent space disentanglement in diffusion transformers enables zero-shot fine-grained semantic editing.
+\newblock \emph{arXiv:2408.13335}, 2024.
+
+\bibitem[Radhakrishnan et~al.(2024)]{radhakrishnan2024mechanism}
+Radhakrishnan, A., Beaglehole, D., Pandit, P., and Belkin, M.
+\newblock Mechanism of feature learning in deep fully connected networks and kernel machines.
+\newblock \emph{Science}, 383(6690):1461, 2024.
+
+\bibitem[Radhakrishnan et~al.(2025)]{radhakrishnan2025linear}
+Radhakrishnan, A., Belkin, M., and Drusvyatskiy, D.
+\newblock Linear recursive feature machines provably recover low-rank matrices.
+\newblock \emph{PNAS}, 2025.
+
+\bibitem[Schramowski et~al.(2022)]{schramowski2022safe}
+Schramowski, P., Brack, M., Deiseroth, B., and Kersting, K.
+\newblock Safe latent diffusion: Mitigating inappropriate degeneration in diffusion models.
+\newblock \emph{CVPR}, 2023.
+
+\bibitem[Singhal et~al.(2025)]{singhal2025fksteering}
+Singhal, R., Horvitz, Z., Teehan, R., Ren, M., Yu, Z., McKeown, K., and Ranganath, R.
+\newblock A general framework for inference-time scaling and steering of diffusion models.
+\newblock \emph{arXiv:2501.06848}, 2025.
+
+\bibitem[Song et~al.(2021)]{song2021scorebased}
+Song, Y., Sohl-Dickstein, J., Kingma, D.~P., Kumar, A., Ermon, S., and Poole, B.
+\newblock Score-based generative modeling through stochastic differential equations.
+\newblock \emph{ICLR}, 2021.
+
+\end{thebibliography}
+
+\end{document}
